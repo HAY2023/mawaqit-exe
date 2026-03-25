@@ -1,0 +1,2 @@
+PyInstaller
+# Add your application-specific dependencies here
