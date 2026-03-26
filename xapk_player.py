@@ -21,7 +21,10 @@ ADB_DIR = os.path.join(APP_DIR, "platform-tools")
 ADB_EXE = os.path.join(ADB_DIR, "adb.exe")
 ADB_URL = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "xapk_player_temp")
-BLUESTACKS_URL = "https://cdn3.bluestacks.com/downloads/windows/nxt/5.21.580.1002/c60e71b4b42e25f18e8c4e8ebaf28e8e/FullInstaller/x64/BlueStacksMicroInstaller_5.21.580.1002_amd64_native.exe"
+BLUESTACKS_URLS = [
+    "https://cdn3.bluestacks.com/downloads/windows/nxt/installer/BlueStacksMicroInstaller_native.exe",
+    "https://cdn3.bluestacks.com/downloads/windows/nxt/installer/BlueStacksFullInstaller_native.exe",
+]
 BLUESTACKS_INSTALLER = os.path.join(APP_DIR, "BlueStacks_installer.exe")
 
 # Known emulator ADB ports
@@ -280,7 +283,27 @@ class XAPKPlayer:
 
         try:
             os.makedirs(APP_DIR, exist_ok=True)
-            self._download_with_progress(BLUESTACKS_URL, BLUESTACKS_INSTALLER, "BlueStacks")
+
+            # Try each URL until one works
+            downloaded = False
+            for url in BLUESTACKS_URLS:
+                try:
+                    self._set_status(f"⬇️ جاري تحميل BlueStacks...", "#ffaa00")
+                    self._download_with_progress(url, BLUESTACKS_INSTALLER, "BlueStacks")
+                    downloaded = True
+                    break
+                except Exception:
+                    continue
+
+            if not downloaded:
+                self._set_status("❌ فشل تحميل BlueStacks من جميع الروابط", "#ff4444")
+                messagebox.showinfo(
+                    "تحميل يدوي",
+                    "لم نتمكن من تحميل BlueStacks تلقائياً.\n\n"
+                    "يرجى تحميله يدوياً من:\nhttps://www.bluestacks.com/download.html\n\n"
+                    "ثم أعد المحاولة."
+                )
+                return False
 
             self._set_status("⚡ جاري تثبيت BlueStacks (قد يستغرق بضع دقائق)...", "#ffaa00")
             self._set_progress("⏳ يرجى الانتظار حتى يكتمل التثبيت...")
