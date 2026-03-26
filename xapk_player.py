@@ -1,6 +1,6 @@
 """
 XAPK Player - Lightweight XAPK Launcher for Windows
-Extracts XAPK files and installs/launches APKs via ADB on WSA or emulator.
+Extracts XAPK files, auto-downloads emulator if needed, installs/launches APKs.
 """
 import os
 import sys
@@ -10,29 +10,38 @@ import shutil
 import subprocess
 import threading
 import tempfile
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import urllib.request
 
 # --- Config ---
-ADB_DIR = os.path.join(os.path.expanduser("~"), ".xapk_player", "platform-tools")
+APP_DIR = os.path.join(os.path.expanduser("~"), ".xapk_player")
+ADB_DIR = os.path.join(APP_DIR, "platform-tools")
 ADB_EXE = os.path.join(ADB_DIR, "adb.exe")
 ADB_URL = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "xapk_player_temp")
+BLUESTACKS_URL = "https://cdn3.bluestacks.com/downloads/windows/nxt/5.21.580.1002/c60e71b4b42e25f18e8c4e8ebaf28e8e/FullInstaller/x64/BlueStacksMicroInstaller_5.21.580.1002_amd64_native.exe"
+BLUESTACKS_INSTALLER = os.path.join(APP_DIR, "BlueStacks_installer.exe")
 
-
-def resource_path(relative_path):
-    """Get absolute path to resource (works for PyInstaller)"""
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+# Known emulator ADB ports
+EMULATOR_PORTS = [
+    ("WSA", "127.0.0.1:58526"),
+    ("BlueStacks 5", "127.0.0.1:5555"),
+    ("BlueStacks 4", "127.0.0.1:5565"),
+    ("NoxPlayer", "127.0.0.1:62001"),
+    ("MEmu", "127.0.0.1:21503"),
+    ("LDPlayer", "127.0.0.1:5555"),
+    ("LDPlayer 2", "127.0.0.1:5556"),
+    ("Genymotion", "127.0.0.1:5557"),
+]
 
 
 class XAPKPlayer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("XAPK Player")
-        self.root.geometry("700x500")
+        self.root.geometry("720x550")
         self.root.configure(bg="#1a1a2e")
         self.root.resizable(False, False)
 
@@ -47,26 +56,26 @@ class XAPKPlayer:
             self.root, text="⬡ XAPK Player", font=("Segoe UI", 28, "bold"),
             fg="#e94560", bg="#1a1a2e"
         )
-        title.pack(pady=(30, 5))
+        title.pack(pady=(25, 3))
 
         subtitle = tk.Label(
             self.root, text="مشغل تطبيقات XAPK خفيف لنظام ويندوز",
             font=("Segoe UI", 12), fg="#8888aa", bg="#1a1a2e"
         )
-        subtitle.pack(pady=(0, 20))
+        subtitle.pack(pady=(0, 15))
 
         # Drop zone frame
         self.drop_frame = tk.Frame(
             self.root, bg="#16213e", highlightbackground="#e94560",
             highlightthickness=2, cursor="hand2"
         )
-        self.drop_frame.pack(padx=40, pady=10, fill="x", ipady=30)
+        self.drop_frame.pack(padx=40, pady=8, fill="x", ipady=25)
 
         self.file_label = tk.Label(
             self.drop_frame, text="📂  اضغط هنا لاختيار ملف XAPK",
             font=("Segoe UI", 14), fg="#ccccdd", bg="#16213e", cursor="hand2"
         )
-        self.file_label.pack(pady=20)
+        self.file_label.pack(pady=18)
         self.file_label.bind("<Button-1>", self._pick_file)
         self.drop_frame.bind("<Button-1>", self._pick_file)
 
@@ -75,18 +84,25 @@ class XAPKPlayer:
             self.root, text="", font=("Segoe UI", 11),
             fg="#8888aa", bg="#1a1a2e", justify="right"
         )
-        self.info_label.pack(pady=10)
+        self.info_label.pack(pady=8)
+
+        # Progress bar (simple text-based)
+        self.progress_label = tk.Label(
+            self.root, text="", font=("Segoe UI", 10),
+            fg="#ffaa00", bg="#1a1a2e", wraplength=620
+        )
+        self.progress_label.pack(pady=2)
 
         # Status
         self.status_label = tk.Label(
             self.root, text="", font=("Segoe UI", 10),
-            fg="#44bb77", bg="#1a1a2e", wraplength=600
+            fg="#44bb77", bg="#1a1a2e", wraplength=620
         )
-        self.status_label.pack(pady=5)
+        self.status_label.pack(pady=3)
 
         # Buttons frame
         btn_frame = tk.Frame(self.root, bg="#1a1a2e")
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=12)
 
         self.install_btn = tk.Button(
             btn_frame, text="⚡ تثبيت وتشغيل", font=("Segoe UI", 14, "bold"),
@@ -106,10 +122,10 @@ class XAPKPlayer:
 
         # Footer
         footer = tk.Label(
-            self.root, text="يتطلب WSA أو محاكي أندرويد متصل عبر ADB",
+            self.root, text="سيتم تحميل المحاكي تلقائياً إذا لم يكن موجوداً",
             font=("Segoe UI", 9), fg="#555566", bg="#1a1a2e"
         )
-        footer.pack(side="bottom", pady=10)
+        footer.pack(side="bottom", pady=8)
 
     def _pick_file(self, event=None):
         path = filedialog.askopenfilename(
@@ -140,7 +156,7 @@ class XAPKPlayer:
                                 text=f"📱 {name}\n📦 {pkg}\n🏷️ v{ver}"
                             )
             elif path.endswith(".apk"):
-                self.info_label.config(text=f"📱 ملف APK مباشر")
+                self.info_label.config(text="📱 ملف APK مباشر")
                 self.manifest = {"package_name": "direct_apk"}
         except Exception as e:
             self.info_label.config(text=f"⚠️ لا يمكن قراءة البيانات: {e}")
@@ -152,27 +168,156 @@ class XAPKPlayer:
         self.status_label.config(text=text, fg=color)
         self.root.update_idletasks()
 
+    def _set_progress(self, text, color="#ffaa00"):
+        self.progress_label.config(text=text, fg=color)
+        self.root.update_idletasks()
+
+    # ---- ADB Management ----
     def _ensure_adb(self):
         """Download ADB if not present"""
         if os.path.isfile(ADB_EXE):
             return True
 
-        self._set_status("⏳ جاري تحميل ADB...", "#ffaa00")
+        self._set_status("⏳ جاري تحميل ADB...")
         try:
-            os.makedirs(os.path.dirname(ADB_DIR), exist_ok=True)
+            os.makedirs(APP_DIR, exist_ok=True)
             zip_path = os.path.join(tempfile.gettempdir(), "platform-tools.zip")
-            urllib.request.urlretrieve(ADB_URL, zip_path)
 
+            self._download_with_progress(ADB_URL, zip_path, "ADB")
+
+            self._set_status("📦 جاري استخراج ADB...")
             with zipfile.ZipFile(zip_path, 'r') as z:
-                z.extractall(os.path.dirname(ADB_DIR))
-
+                z.extractall(APP_DIR)
             os.remove(zip_path)
+
             self._set_status("✅ تم تحميل ADB بنجاح")
+            self._set_progress("")
             return True
         except Exception as e:
             self._set_status(f"❌ فشل تحميل ADB: {e}", "#ff4444")
             return False
 
+    # ---- Emulator Management ----
+    def _check_emulator_running(self):
+        """Check if any Android emulator is running and accessible via ADB"""
+        if not os.path.isfile(ADB_EXE):
+            return False
+
+        for emu_name, addr in EMULATOR_PORTS:
+            try:
+                subprocess.run(
+                    [ADB_EXE, "connect", addr],
+                    capture_output=True, timeout=3
+                )
+            except:
+                pass
+
+        try:
+            result = subprocess.run(
+                [ADB_EXE, "devices"], capture_output=True, text=True, timeout=5
+            )
+            lines = [
+                l.strip() for l in result.stdout.strip().split('\n')
+                if l.strip() and 'List' not in l and 'offline' not in l
+            ]
+            return len(lines) > 0
+        except:
+            return False
+
+    def _detect_installed_emulators(self):
+        """Detect if BlueStacks or other emulators are installed"""
+        paths_to_check = [
+            (r"C:\Program Files\BlueStacks_nxt", "BlueStacks 5"),
+            (r"C:\Program Files\BlueStacks", "BlueStacks 4"),
+            (r"C:\Program Files (x86)\BlueStacks", "BlueStacks"),
+            (r"C:\Program Files\Nox\bin", "NoxPlayer"),
+            (r"C:\Program Files (x86)\Nox\bin", "NoxPlayer"),
+            (r"C:\Program Files\Microvirt\MEmu", "MEmu"),
+            (r"C:\LDPlayer\LDPlayer4.0", "LDPlayer"),
+            (r"C:\LDPlayer\LDPlayer9", "LDPlayer 9"),
+        ]
+        found = []
+        for path, name in paths_to_check:
+            if os.path.isdir(path):
+                found.append((name, path))
+        return found
+
+    def _try_start_bluestacks(self):
+        """Try to start BlueStacks if installed"""
+        bs_paths = [
+            r"C:\Program Files\BlueStacks_nxt\HD-Player.exe",
+            r"C:\Program Files\BlueStacks\HD-Player.exe",
+            r"C:\Program Files (x86)\BlueStacks\HD-Player.exe",
+        ]
+        for p in bs_paths:
+            if os.path.isfile(p):
+                self._set_status("🚀 جاري تشغيل BlueStacks...", "#ffaa00")
+                subprocess.Popen([p], shell=False)
+                return True
+        return False
+
+    def _download_with_progress(self, url, dest, name=""):
+        """Download a file with progress updates"""
+        def report(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                percent = min(100, (downloaded / total_size) * 100)
+                mb_done = downloaded / (1024 * 1024)
+                mb_total = total_size / (1024 * 1024)
+                self._set_progress(
+                    f"⬇️ تحميل {name}: {mb_done:.0f}/{mb_total:.0f} MB ({percent:.0f}%)"
+                )
+            else:
+                mb_done = downloaded / (1024 * 1024)
+                self._set_progress(f"⬇️ تحميل {name}: {mb_done:.0f} MB...")
+
+        urllib.request.urlretrieve(url, dest, reporthook=report)
+        self._set_progress("")
+
+    def _download_and_install_bluestacks(self):
+        """Download and install BlueStacks automatically"""
+        self._set_status("⏳ جاري تحميل محاكي BlueStacks...", "#ffaa00")
+
+        try:
+            os.makedirs(APP_DIR, exist_ok=True)
+            self._download_with_progress(BLUESTACKS_URL, BLUESTACKS_INSTALLER, "BlueStacks")
+
+            self._set_status("⚡ جاري تثبيت BlueStacks (قد يستغرق بضع دقائق)...", "#ffaa00")
+            self._set_progress("⏳ يرجى الانتظار حتى يكتمل التثبيت...")
+
+            # Run installer
+            proc = subprocess.Popen(
+                [BLUESTACKS_INSTALLER],
+                shell=False
+            )
+            proc.wait()
+
+            self._set_progress("")
+            self._set_status("✅ تم تثبيت BlueStacks! جاري التشغيل...")
+
+            # Try to start BlueStacks
+            self._try_start_bluestacks()
+
+            # Wait for BlueStacks to boot
+            self._set_status("⏳ جاري انتظار تشغيل BlueStacks...", "#ffaa00")
+            for i in range(60):  # Wait up to 2 minutes
+                time.sleep(2)
+                self._set_progress(f"⏳ انتظار المحاكي... ({i*2}/120 ثانية)")
+                if self._check_emulator_running():
+                    self._set_progress("")
+                    self._set_status("✅ BlueStacks جاهز!")
+                    return True
+
+            self._set_progress("")
+            self._set_status("⚠️ يرجى تشغيل BlueStacks يدوياً ثم المحاولة مرة أخرى", "#ffaa00")
+            return False
+
+        except Exception as e:
+            self._set_progress("")
+            self._set_status(f"❌ فشل تحميل/تثبيت BlueStacks: {e}", "#ff4444")
+            return False
+
+    # ---- XAPK Operations ----
     def _extract_xapk(self):
         """Extract XAPK and return list of APK paths"""
         if os.path.exists(EXTRACT_DIR):
@@ -186,56 +331,70 @@ class XAPKPlayer:
 
         apk_files = []
         with zipfile.ZipFile(self.xapk_path, 'r') as z:
-            for name in z.namelist():
+            total = len(z.namelist())
+            for i, name in enumerate(z.namelist()):
                 if name.endswith('.apk'):
                     z.extract(name, EXTRACT_DIR)
                     apk_files.append(os.path.join(EXTRACT_DIR, name))
                 elif name.endswith('.obb'):
                     z.extract(name, EXTRACT_DIR)
+                self._set_progress(f"📦 استخراج: {i+1}/{total}")
 
+        self._set_progress("")
         self._set_status(f"✅ تم استخراج {len(apk_files)} ملف APK")
         return apk_files
 
     def _install_apks(self, apk_files):
-        """Install APKs via ADB"""
+        """Install APKs via ADB (auto-downloads emulator if needed)"""
         if not self._ensure_adb():
             return False
 
-        self._set_status("🔌 جاري الاتصال بـ ADB...")
+        self._set_status("🔌 جاري البحث عن محاكي أندرويد...")
 
-        # Try WSA first
-        try:
-            subprocess.run(
-                [ADB_EXE, "connect", "127.0.0.1:58526"],
-                capture_output=True, timeout=5
-            )
-        except:
-            pass
+        # Try connecting to running emulators
+        if not self._check_emulator_running():
+            # No emulator running - check if one is installed
+            installed = self._detect_installed_emulators()
 
-        # Check device connection
-        result = subprocess.run(
-            [ADB_EXE, "devices"], capture_output=True, text=True, timeout=10
-        )
+            if installed:
+                emu_name, emu_path = installed[0]
+                self._set_status(f"🚀 تم العثور على {emu_name}، جاري التشغيل...", "#ffaa00")
 
-        lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and 'List' not in l]
-        if not lines:
-            self._set_status(
-                "❌ لا يوجد جهاز متصل! شغّل WSA أو محاكي أندرويد أولاً",
-                "#ff4444"
-            )
-            messagebox.showerror(
-                "لا يوجد جهاز",
-                "لم يتم العثور على جهاز أندرويد متصل.\n\n"
-                "الحلول:\n"
-                "1. شغّل Windows Subsystem for Android (WSA)\n"
-                "2. أو شغّل محاكي أندرويد (BlueStacks, NoxPlayer...)\n"
-                "3. أو اوصل هاتف أندرويد عبر USB مع تفعيل USB Debugging"
-            )
+                if "BlueStacks" in emu_name:
+                    self._try_start_bluestacks()
+
+                # Wait for emulator to boot
+                self._set_status("⏳ جاري انتظار تشغيل المحاكي...", "#ffaa00")
+                for i in range(60):
+                    time.sleep(2)
+                    self._set_progress(f"⏳ انتظار المحاكي... ({i*2}/120 ثانية)")
+                    if self._check_emulator_running():
+                        break
+                self._set_progress("")
+
+            if not self._check_emulator_running():
+                # Still no emulator - ask to download
+                result = messagebox.askyesno(
+                    "لا يوجد محاكي أندرويد",
+                    "لم يتم العثور على محاكي أندرويد.\n\n"
+                    "هل تريد تحميل وتثبيت BlueStacks تلقائياً؟\n"
+                    "(حجم التحميل ~10 MB مثبت صغير، سيحمّل الباقي تلقائياً)"
+                )
+                if result:
+                    if not self._download_and_install_bluestacks():
+                        return False
+                else:
+                    self._set_status("❌ تم الإلغاء - يحتاج محاكي أندرويد للعمل", "#ff4444")
+                    return False
+
+        # Final check
+        if not self._check_emulator_running():
+            self._set_status("❌ لا يوجد جهاز متصل!", "#ff4444")
             return False
 
-        self._set_status(f"📱 جهاز متصل: {lines[0]}")
+        self._set_status("📱 متصل بالمحاكي ✓")
 
-        # Install using install-multiple for split APKs
+        # Install APKs
         if len(apk_files) > 1:
             self._set_status("⚡ جاري تثبيت التطبيق (split APKs)...")
             cmd = [ADB_EXE, "install-multiple", "-r"] + apk_files
@@ -243,14 +402,14 @@ class XAPKPlayer:
             self._set_status("⚡ جاري تثبيت التطبيق...")
             cmd = [ADB_EXE, "install", "-r", apk_files[0]]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
         if "Success" in result.stdout:
             self._set_status("✅ تم تثبيت التطبيق بنجاح!")
             return True
         else:
             error = result.stderr or result.stdout
-            self._set_status(f"❌ فشل التثبيت: {error}", "#ff4444")
+            self._set_status(f"❌ فشل التثبيت: {error[:200]}", "#ff4444")
             return False
 
     def _install_obb(self):
@@ -261,8 +420,7 @@ class XAPKPlayer:
         if not pkg:
             return
 
-        obb_dir = os.path.join(EXTRACT_DIR)
-        for root_dir, dirs, files in os.walk(obb_dir):
+        for root_dir, dirs, files in os.walk(EXTRACT_DIR):
             for f in files:
                 if f.endswith('.obb'):
                     obb_path = os.path.join(root_dir, f)
@@ -291,8 +449,9 @@ class XAPKPlayer:
              "android.intent.category.LAUNCHER", "1"],
             capture_output=True, timeout=10
         )
-        self._set_status(f"✅ تم تشغيل التطبيق!", "#44bb77")
+        self._set_status("✅ تم تشغيل التطبيق!", "#44bb77")
 
+    # ---- Main Actions ----
     def _run_install(self):
         """Full install + launch flow in background thread"""
         self.install_btn.config(state="disabled")
@@ -339,15 +498,17 @@ class XAPKPlayer:
 
 
 def main():
-    # Auto-load XAPK if passed as argument
     app = XAPKPlayer()
 
+    # Auto-load XAPK if passed as argument
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
         app.xapk_path = sys.argv[1]
-        app._pick_file.__func__(app)  # trigger UI update
-        app.xapk_path = sys.argv[1]
         filename = os.path.basename(sys.argv[1])
+        size_mb = os.path.getsize(sys.argv[1]) / (1024 * 1024)
         app.file_label.config(text=f"📄 {filename}", fg="#e94560")
+        app.status_label.config(text=f"حجم الملف: {size_mb:.1f} MB", fg="#44bb77")
+        app.install_btn.config(state="normal")
+        app.extract_btn.config(state="normal")
 
     app.run()
 
