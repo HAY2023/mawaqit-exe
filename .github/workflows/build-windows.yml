@@ -35,7 +35,7 @@ jobs:
     - name: Download QEMU
       run: |
         # Download portable QEMU for Windows (from dirkarnez/qemu-portable)
-        Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/v20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
+        Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
         Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
         Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
         # Verify
