@@ -1,15 +1,15 @@
 name: Build and Release MAWAQIT
 
 on:
-  workflow_dispatch: # Allows manual trigger from Actions tab
-  release:
-    types: [published]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write # Important: gives the action permission to upload to releases
+      contents: write
 
     steps:
     - name: Checkout Code
@@ -23,19 +23,33 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller
-        pip install -r requirements.txt
+        pip install pyinstaller pywebview
 
     - name: Build MAWAQIT EXE
       run: |
-        pyinstaller --onefile --windowed --name MAWAQIT mawaqit.py
+        pyinstaller --onefile --windowed --name MAWAQIT --icon=NONE mawaqit.py
 
-    - name: Upload EXE to Latest Release
+    - name: Upload EXE as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: MAWAQIT-Windows
+        path: dist/MAWAQIT.exe
+
+    - name: Create Release and Upload EXE
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v3.5.0
+        name: "MAWAQIT TV v3.5.0"
+        body: |
+          ## MAWAQIT TV for Windows 🕌
+          
+          تطبيق مواقيت TV لأجهزة Windows.
+          
+          ### التحميل والتشغيل:
+          1. حمّل ملف `MAWAQIT.exe` من الأسفل
+          2. شغّل الملف مباشرة (لا يحتاج تثبيت)
+          3. أدخل اسم المسجد أو الرابط واضغط Start
+        files: dist/MAWAQIT.exe
+        make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        # Fetch the latest release tag (works in Windows runner PowerShell)
-        $LATEST_TAG = gh release view --json tagName --jq .tagName
-        echo "Uploading to release: $LATEST_TAG"
-        # Upload the executable
-        gh release upload $LATEST_TAG dist/MAWAQIT.exe --clobber
