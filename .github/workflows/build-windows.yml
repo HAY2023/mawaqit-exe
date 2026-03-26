@@ -34,17 +34,22 @@ jobs:
 
     - name: Download QEMU
       run: |
-        # Download QEMU Windows build (portable zip from GitHub mirror)
-        Invoke-WebRequest -Uri "https://github.com/nicehash/qemu-windows/releases/download/v8.2.2/qemu-w64-v8.2.2.zip" -OutFile "qemu.zip"
-        Expand-Archive -Path "qemu.zip" -DestinationPath "qemu_temp" -Force
-        # Move to package/qemu
-        $qemuSrc = Get-ChildItem -Path "qemu_temp" -Directory | Select-Object -First 1
-        if ($qemuSrc) {
-          Move-Item -Path $qemuSrc.FullName -Destination "package/qemu" -Force
-        } else {
-          Move-Item -Path "qemu_temp" -Destination "package/qemu" -Force
-        }
+        # Download portable QEMU for Windows (from dirkarnez/qemu-portable)
+        Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/v20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
+        Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
         Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
+        # Verify
+        if (Test-Path "package/qemu/qemu-system-x86_64.exe") {
+          Write-Host "QEMU OK"
+        } else {
+          # Files might be in a subfolder
+          $sub = Get-ChildItem -Path "package/qemu" -Directory | Select-Object -First 1
+          if ($sub) {
+            Get-ChildItem -Path $sub.FullName | Move-Item -Destination "package/qemu/" -Force
+            Remove-Item $sub.FullName -Recurse -ErrorAction SilentlyContinue
+          }
+          Write-Host "Files moved to package/qemu/"
+        }
 
     - name: Download Android-x86 ISO
       run: |
