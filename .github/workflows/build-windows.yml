@@ -1,4 +1,4 @@
-name: Build XAPK Player
+name: Build XAPK Player (Full Package)
 
 on:
   push:
@@ -21,38 +21,92 @@ jobs:
         python-version: '3.11'
 
     - name: Install PyInstaller
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller
+      run: pip install pyinstaller
 
-    - name: Build XAPK Player EXE
-      run: |
-        pyinstaller --onefile --windowed --name "XAPK-Player" xapk_player.py
+    - name: Build EXE
+      run: pyinstaller --onefile --windowed --name "XAPK-Player" xapk_player.py
 
-    - name: Upload EXE as Artifact
+    - name: Download ADB Platform-Tools
+      run: |
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip"
+        Expand-Archive -Path "platform-tools.zip" -DestinationPath "package" -Force
+        Remove-Item "platform-tools.zip"
+
+    - name: Download QEMU
+      run: |
+        # Download QEMU Windows build (portable zip from GitHub mirror)
+        Invoke-WebRequest -Uri "https://github.com/nicehash/qemu-windows/releases/download/v8.2.2/qemu-w64-v8.2.2.zip" -OutFile "qemu.zip"
+        Expand-Archive -Path "qemu.zip" -DestinationPath "qemu_temp" -Force
+        # Move to package/qemu
+        $qemuSrc = Get-ChildItem -Path "qemu_temp" -Directory | Select-Object -First 1
+        if ($qemuSrc) {
+          Move-Item -Path $qemuSrc.FullName -Destination "package/qemu" -Force
+        } else {
+          Move-Item -Path "qemu_temp" -Destination "package/qemu" -Force
+        }
+        Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
+
+    - name: Download Android-x86 ISO
+      run: |
+        mkdir "package/android" -ErrorAction SilentlyContinue
+        # Download Android-x86 9.0 r2 (stable, ~900MB)
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download" -OutFile "package/android/android-x86.iso" -UserAgent "Mozilla/5.0"
+
+    - name: Assemble Package
+      run: |
+        # Copy EXE to package root
+        Copy-Item "dist/XAPK-Player.exe" -Destination "package/XAPK-Player.exe"
+        
+        # Create data folder
+        mkdir "package/data" -ErrorAction SilentlyContinue
+        
+        # Create README
+        @"
+        ===================================
+        XAPK Player - مشغل تطبيقات أندرويد
+        ===================================
+        
+        الاستخدام:
+        1. شغّل XAPK-Player.exe
+        2. اختر ملف XAPK أو APK
+        3. اضغط تشغيل
+        
+        لا يحتاج تثبيت أي شيء إضافي!
+        "@ | Out-File -FilePath "package/README.txt" -Encoding UTF8
+
+    - name: Create ZIP Package
+      run: |
+        Compress-Archive -Path "package/*" -DestinationPath "XAPK-Player-Full.zip" -Force
+
+    - name: Upload Package as Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: XAPK-Player-Windows
-        path: dist/XAPK-Player.exe
+        name: XAPK-Player-Full
+        path: XAPK-Player-Full.zip
+        retention-days: 30
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v1.0.0
-        name: "XAPK Player v1.0.0"
+        tag_name: v2.0.0
+        name: "XAPK Player v2.0.0 - حزمة كاملة"
         body: |
-          ## XAPK Player - مشغل XAPK خفيف 📱
+          ## XAPK Player - مشغل تطبيقات أندرويد 📱
           
-          مشغل تطبيقات XAPK خفيف لنظام ويندوز.
+          حزمة كاملة تحتوي على كل شيء - لا يحتاج تثبيت أي شيء!
           
-          ### كيفية الاستخدام:
-          1. حمّل `XAPK-Player.exe`
-          2. شغّل البرنامج واختر ملف XAPK
-          3. اضغط "تثبيت وتشغيل"
+          ### المحتويات:
+          - ✅ XAPK Player (واجهة التشغيل)
+          - ✅ QEMU (محاكي مدمج)
+          - ✅ Android-x86 (نظام أندرويد)
+          - ✅ ADB (أدوات الاتصال)
           
-          ### المتطلبات:
-          - Windows Subsystem for Android (WSA) أو محاكي أندرويد
-        files: dist/XAPK-Player.exe
+          ### الاستخدام:
+          1. حمّل `XAPK-Player-Full.zip`
+          2. فك الضغط
+          3. شغّل `XAPK-Player.exe`
+          4. اختر ملف XAPK واضغط تشغيل
+        files: XAPK-Player-Full.zip
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
