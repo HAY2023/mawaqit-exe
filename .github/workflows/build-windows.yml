@@ -35,51 +35,70 @@ jobs:
         draw.ellipse([10, 10, size-10, size-10], outline='#5B2D8E', width=8)
         for i in range(12):
             angle = math.radians(i * 30 - 90)
-            r = 100
-            x = cx + r * math.cos(angle)
-            y = cy + r * math.sin(angle)
+            x = cx + 100 * math.cos(angle)
+            y = cy + 100 * math.sin(angle)
             dot_r = 6 if i % 3 == 0 else 4
             draw.ellipse([x-dot_r, y-dot_r, x+dot_r, y+dot_r], fill='#5B2D8E')
         draw.line([(cx, cy), (cx, cy-55)], fill='#5B2D8E', width=6)
         draw.line([(cx, cy), (cx+40, cy+30)], fill='#5B2D8E', width=5)
         draw.ellipse([cx-8, cy-8, cx+8, cy+8], fill='#5B2D8E')
-        img.save('app.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+        img.save('app.ico', format='ICO', sizes=[(256,256),(64,64),(32,32),(16,16)])
         print('Icon OK')
         "
 
     - name: Build XAPK Player EXE
       run: pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
 
-    - name: Download ADB
+    - name: Download ADB (minimal)
       run: |
         curl -L -o platform-tools.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
         Expand-Archive -Path "platform-tools.zip" -DestinationPath "package" -Force
         Remove-Item "platform-tools.zip"
-        Write-Host "ADB OK"
+        # Keep only essential ADB files
+        Get-ChildItem "package/platform-tools" -Exclude "adb.exe","AdbWinApi.dll","AdbWinUsbApi.dll" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "ADB OK - Size: $([math]::Round((Get-ChildItem 'package/platform-tools' -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)) MB"
 
-    - name: Download QEMU Portable
+    - name: Download and Trim QEMU
       run: |
         curl -L -o qemu.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
-        Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
-        Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
-        $sub = Get-ChildItem -Path "package/qemu" -Directory | Select-Object -First 1
-        if ($sub -and !(Test-Path "package/qemu/qemu-system-x86_64.exe")) {
-          Get-ChildItem -Path $sub.FullName | Move-Item -Destination "package/qemu/" -Force
-          Remove-Item $sub.FullName -Recurse -ErrorAction SilentlyContinue
+        Expand-Archive -Path "qemu.zip" -DestinationPath "temp_qemu" -Force
+        Remove-Item "qemu.zip"
+        
+        # Find QEMU files
+        $qemuDir = Get-ChildItem "temp_qemu" -Recurse -Filter "qemu-system-x86_64.exe" | Select-Object -First 1
+        $srcDir = $qemuDir.DirectoryName
+        
+        # Create minimal QEMU (only x86_64 essentials)
+        mkdir "package/qemu" -ErrorAction SilentlyContinue
+        
+        # Copy only what we need
+        Copy-Item "$srcDir/qemu-system-x86_64.exe" "package/qemu/"
+        Copy-Item "$srcDir/qemu-img.exe" "package/qemu/" -ErrorAction SilentlyContinue
+        
+        # Copy required DLLs
+        Get-ChildItem "$srcDir" -Filter "*.dll" | Copy-Item -Destination "package/qemu/"
+        
+        # Copy only essential BIOS/firmware
+        $biosFiles = @("bios-256k.bin", "efi-virtio.rom", "kvmvapic.bin", "vgabios-virtio.bin", "vgabios-stdvga.bin", "efi-e1000.rom", "efi-e1000e.rom")
+        mkdir "package/qemu/share" -ErrorAction SilentlyContinue
+        foreach ($f in $biosFiles) {
+          $found = Get-ChildItem "temp_qemu" -Recurse -Filter $f | Select-Object -First 1
+          if ($found) { Copy-Item $found.FullName "package/qemu/share/" }
         }
-        Write-Host "QEMU OK"
+        
+        Remove-Item "temp_qemu" -Recurse -Force
+        Write-Host "QEMU OK - Size: $([math]::Round((Get-ChildItem 'package/qemu' -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)) MB"
 
-    - name: Download Android-x86 ISO
+    - name: Download Android-x86 (compact version)
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
         
-        # Try SourceForge direct mirrors (bypass Cloudflare)
+        # Use Android-x86 6.0 (much smaller than 9.0: ~450MB vs ~900MB)
         $mirrors = @(
-          "https://cfhcable.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          "https://netcologne.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          "https://deac-fra.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          "https://kent.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+          "https://cfhcable.dl.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso",
+          "https://netcologne.dl.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso",
+          "https://deac-fra.dl.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso",
+          "https://kent.dl.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso"
         )
         
         $success = $false
@@ -92,48 +111,46 @@ jobs:
             Write-Host "Downloaded: $([math]::Round($isoSize, 1)) MB"
             if ($isoSize -gt 100) {
               $success = $true
-              Write-Host "Android-x86 ISO OK!"
               break
             }
             Remove-Item "package/android/android-x86.iso" -ErrorAction SilentlyContinue
           }
-          Write-Host "Failed, trying next mirror..."
+          Write-Host "Failed, next mirror..."
         }
         
         if (-not $success) {
-          Write-Host "ERROR: Could not download Android-x86 from any mirror"
+          Write-Host "ERROR: Could not download Android-x86"
           exit 1
         }
 
     - name: Assemble Package
       run: |
-        Copy-Item "dist/MAWAQIT-Player.exe" -Destination "package/MAWAQIT-Player.exe"
-        Copy-Item "app.ico" -Destination "package/app.ico"
+        Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
+        Copy-Item "app.ico" "package/app.ico"
         mkdir "package/data" -ErrorAction SilentlyContinue
-
-        @"
-        ===================================
-        MAWAQIT Player
-        ===================================
         
-        1. Run MAWAQIT-Player.exe
-        2. Select your XAPK/APK file
-        3. Click Start
-        
-        No installation needed!
-        "@ | Out-File -FilePath "package/README.txt" -Encoding UTF8
+        $totalSize = (Get-ChildItem "package" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+        Write-Host "Total uncompressed: $([math]::Round($totalSize, 1)) MB"
 
-    - name: Create ZIP
+    - name: Create compressed package
       run: |
+        # Use 7z for much better compression
+        7z a -t7z -mx=9 "MAWAQIT-Player.7z" "./package/*"
+        $pkg = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
+        Write-Host "Final 7z size: $([math]::Round($pkg, 1)) MB"
+        
+        # Also create ZIP as fallback
         Compress-Archive -Path "package/*" -DestinationPath "MAWAQIT-Player.zip" -Force
         $zipSize = (Get-Item "MAWAQIT-Player.zip").Length / 1MB
-        Write-Host "Package size: $([math]::Round($zipSize, 1)) MB"
+        Write-Host "Final ZIP size: $([math]::Round($zipSize, 1)) MB"
 
     - name: Upload as Artifact
       uses: actions/upload-artifact@v4
       with:
         name: MAWAQIT-Player
-        path: MAWAQIT-Player.zip
+        path: |
+          MAWAQIT-Player.7z
+          MAWAQIT-Player.zip
         retention-days: 30
 
     - name: Delete old release
@@ -150,20 +167,19 @@ jobs:
         body: |
           ## 🕌 MAWAQIT Player for Windows
           
-          حزمة كاملة - كل شيء مدمج بالداخل!
+          حزمة كاملة مدمجة - حجم أصغر!
           
-          ### المحتويات:
-          - ✅ MAWAQIT Player + أيقونة
-          - ✅ QEMU (محاكي أندرويد)
-          - ✅ Android-x86 (نظام أندرويد)
-          - ✅ ADB (أدوات التثبيت)
+          ### التحميل:
+          - **MAWAQIT-Player.7z** ← حجم أصغر (يحتاج 7-Zip لفك الضغط)
+          - **MAWAQIT-Player.zip** ← يعمل مباشرة مع Windows
           
           ### الاستخدام:
-          1. حمّل `MAWAQIT-Player.zip`
-          2. فك الضغط
-          3. شغّل `MAWAQIT-Player.exe`
-          4. اختر ملف XAPK واضغط 🚀 تشغيل
-        files: MAWAQIT-Player.zip
+          1. فك الضغط
+          2. شغّل `MAWAQIT-Player.exe`
+          3. اختر ملف XAPK واضغط 🚀 تشغيل
+        files: |
+          MAWAQIT-Player.7z
+          MAWAQIT-Player.zip
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
