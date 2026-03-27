@@ -234,11 +234,19 @@ jobs:
         Expand-Archive "upx.zip" -DestinationPath "upx_temp" -Force
         $upx = (Get-ChildItem "upx_temp" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
 
-        Get-ChildItem "package" -Recurse -Include "*.exe","*.dll" | Where-Object { $_.Length -gt 500KB } | ForEach-Object {
-          $before = $_.Length/1MB
-          & $upx --best --lzma $_.FullName 2>$null | Out-Null
-          $after = (Get-Item $_.FullName).Length/1MB
-          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
+        # Get all DLL and EXE > 500KB, BUT aggressively exclude our Pyinstaller EXE
+        $files = Get-ChildItem "package" -Recurse -Include "*.exe","*.dll" | Where-Object { $_.Length -gt 500KB -and $_.Name -ne 'XAPK-Player.exe' }
+        
+        foreach ($file in $files) {
+          $before = $file.Length/1MB
+          # Run UPX but do not crash on error
+          $proc = Start-Process -FilePath $upx -ArgumentList "--best --lzma `"$($file.FullName)`"" -Wait -NoNewWindow -PassThru
+          if ($proc.ExitCode -eq 0) {
+            $after = (Get-Item $file.FullName).Length/1MB
+            Write-Host "  $($file.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
+          } else {
+            Write-Warning "  ⚠️ Failed UPX on $($file.Name) (Skipping...)"
+          }
         }
         Remove-Item "upx.zip","upx_temp" -Recurse -Force -ErrorAction SilentlyContinue
 
