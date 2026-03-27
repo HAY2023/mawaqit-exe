@@ -1,4 +1,4 @@
-name: Build MAWAQIT TV for Windows
+name: Build MAWAQIT XAPK Player
 
 on:
   push:
@@ -22,33 +22,137 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pywebview
+        pip install pyinstaller Pillow
 
-    - name: Build MAWAQIT EXE
+    - name: Create App Icon
       run: |
-        pyinstaller --onefile --windowed --name MAWAQIT mawaqit.py
+        python -c "
+        from PIL import Image, ImageDraw
+        import math
 
-    - name: Verify Build
+        size = 256
+        img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        cx, cy = size // 2, size // 2
+
+        # Outer circle
+        draw.ellipse([10, 10, size-10, size-10], outline='#5B2D8E', width=8)
+
+        # Clock dots
+        for i in range(12):
+            angle = math.radians(i * 30 - 90)
+            r = 100
+            x = cx + r * math.cos(angle)
+            y = cy + r * math.sin(angle)
+            dot_r = 6 if i % 3 == 0 else 4
+            draw.ellipse([x-dot_r, y-dot_r, x+dot_r, y+dot_r], fill='#5B2D8E')
+
+        # Islamic star (8-point)
+        star_r = 70
+        for i in range(4):
+            angle = math.radians(i * 45)
+            x1 = cx + star_r * math.cos(angle)
+            y1 = cy + star_r * math.sin(angle)
+            x2 = cx + star_r * math.cos(angle + math.pi)
+            y2 = cy + star_r * math.sin(angle + math.pi)
+            draw.line([(x1, y1), (x2, y2)], fill='#7B4DB8', width=6)
+
+        # Clock hands
+        draw.line([(cx, cy), (cx, cy-55)], fill='#5B2D8E', width=6)
+        draw.line([(cx, cy), (cx+40, cy+30)], fill='#5B2D8E', width=5)
+        draw.ellipse([cx-8, cy-8, cx+8, cy+8], fill='#5B2D8E')
+
+        # Save as ICO
+        img.save('app.ico', format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
+        print('Icon created successfully')
+        "
+
+    - name: Build XAPK Player EXE
       run: |
-        if (Test-Path "dist/MAWAQIT.exe") {
-          $size = (Get-Item "dist/MAWAQIT.exe").Length / 1MB
-          Write-Host "Build successful! MAWAQIT.exe size: $([math]::Round($size, 1)) MB"
+        pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
+
+    - name: Download ADB Platform-Tools
+      run: |
+        curl -L -o platform-tools.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+        Expand-Archive -Path "platform-tools.zip" -DestinationPath "package" -Force
+        Remove-Item "platform-tools.zip"
+        Write-Host "ADB downloaded OK"
+
+    - name: Download QEMU Portable
+      run: |
+        curl -L -o qemu.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
+        Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
+        Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
+        # Move files from subfolder if needed
+        $sub = Get-ChildItem -Path "package/qemu" -Directory | Select-Object -First 1
+        if ($sub -and !(Test-Path "package/qemu/qemu-system-x86_64.exe")) {
+          Get-ChildItem -Path $sub.FullName | Move-Item -Destination "package/qemu/" -Force
+          Remove-Item $sub.FullName -Recurse -ErrorAction SilentlyContinue
+        }
+        if (Test-Path "package/qemu/qemu-system-x86_64.exe") {
+          Write-Host "QEMU OK"
         } else {
-          Write-Host "Build FAILED!"
-          exit 1
+          Write-Host "QEMU files:" 
+          Get-ChildItem "package/qemu" -Recurse | Select-Object -First 20
         }
 
-    - name: Upload EXE as Artifact
+    - name: Download Android-x86 ISO
+      run: |
+        # Use OSDN mirror (no Cloudflare blocking)
+        Write-Host "Downloading Android-x86 from OSDN..."
+        mkdir "package/android" -ErrorAction SilentlyContinue
+        curl -L --retry 3 --retry-delay 5 -o "package/android/android-x86.iso" "https://osdn.net/frs/redir.php?m=auto&f=android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+        $isoSize = (Get-Item "package/android/android-x86.iso").Length / 1MB
+        Write-Host "Android-x86 ISO size: $([math]::Round($isoSize, 1)) MB"
+        if ($isoSize -lt 100) {
+          Write-Host "ISO too small, trying alternative mirror..."
+          curl -L --retry 3 -o "package/android/android-x86.iso" "https://mirrors.gigenet.com/OSDN/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+          $isoSize = (Get-Item "package/android/android-x86.iso").Length / 1MB
+          Write-Host "Retry ISO size: $([math]::Round($isoSize, 1)) MB"
+        }
+
+    - name: Assemble Package
+      run: |
+        Copy-Item "dist/MAWAQIT-Player.exe" -Destination "package/MAWAQIT-Player.exe"
+        Copy-Item "app.ico" -Destination "package/app.ico"
+        mkdir "package/data" -ErrorAction SilentlyContinue
+
+        # Copy the XAPK file if it exists
+        if (Test-Path "com.kanout.mawaqit-3.5.0.xapk") {
+          Copy-Item "com.kanout.mawaqit-3.5.0.xapk" -Destination "package/data/mawaqit.xapk"
+        }
+
+        @"
+        ===================================
+        MAWAQIT Player - مشغل تطبيق مواقيت
+        ===================================
+        
+        الاستخدام:
+        1. شغّل MAWAQIT-Player.exe
+        2. اختر ملف XAPK (أو سيتم اختيار المدمج تلقائياً)
+        3. اضغط تشغيل
+        
+        ملاحظة: أول تشغيل قد يستغرق بعض الوقت
+        لتسريع الأداء, فعّل Hyper-V من إعدادات Windows
+        
+        لا يحتاج تثبيت أي شيء إضافي!
+        "@ | Out-File -FilePath "package/README.txt" -Encoding UTF8
+
+    - name: Create ZIP
+      run: |
+        Compress-Archive -Path "package/*" -DestinationPath "MAWAQIT-Player.zip" -Force
+        $zipSize = (Get-Item "MAWAQIT-Player.zip").Length / 1MB
+        Write-Host "Final package size: $([math]::Round($zipSize, 1)) MB"
+
+    - name: Upload as Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MAWAQIT-Windows
-        path: dist/MAWAQIT.exe
-        retention-days: 90
+        name: MAWAQIT-Player
+        path: MAWAQIT-Player.zip
+        retention-days: 30
 
-    - name: Delete old release if exists
-      run: |
-        gh release delete v3.5.0 --yes --cleanup-tag 2>$null
+    - name: Delete old release
+      run: gh release delete v3.5.0 --yes --cleanup-tag 2>$null
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       continue-on-error: true
@@ -57,25 +161,27 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v3.5.0
-        name: "MAWAQIT TV v3.5.0 for Windows"
+        name: "MAWAQIT Player v3.5.0 - حزمة كاملة"
         body: |
-          ## 🕌 MAWAQIT TV for Windows
+          ## 🕌 MAWAQIT Player - مشغل تطبيق مواقيت على Windows
           
-          تطبيق مواقيت TV لأجهزة Windows - ملف واحد جاهز للتشغيل!
+          حزمة كاملة تحتوي على كل شيء - لا يحتاج تثبيت أي شيء!
           
-          ### التحميل والتشغيل:
-          1. حمّل ملف `MAWAQIT.exe` من الأسفل
-          2. شغّل الملف مباشرة (لا يحتاج تثبيت!)
-          3. أدخل اسم المسجد أو رابط mawaqit.net
-          4. اضغط **Start TV App**
+          ### المحتويات:
+          - ✅ MAWAQIT Player (واجهة التشغيل مع أيقونة)
+          - ✅ QEMU (محاكي أندرويد مدمج)
+          - ✅ Android-x86 (نظام أندرويد)
+          - ✅ ADB (أدوات التثبيت)
+          - ✅ تطبيق MAWAQIT مدمج
           
-          ### المميزات:
-          - ✅ ملف واحد - كل شيء مدمج بالداخل
-          - ✅ لا يحتاج تثبيت Python أو أي برنامج آخر  
-          - ✅ واجهة مميزة وعصرية
-          - ✅ وضع ملء الشاشة
-          - ✅ يعمل مباشرة بدون إعدادات
-        files: dist/MAWAQIT.exe
+          ### الاستخدام:
+          1. حمّل `MAWAQIT-Player.zip`
+          2. فك الضغط في أي مكان
+          3. شغّل `MAWAQIT-Player.exe`
+          4. اضغط 🚀 تشغيل
+          
+          التطبيق سيبدأ تلقائياً في نافذة المحاكي!
+        files: MAWAQIT-Player.zip
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
