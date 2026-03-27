@@ -1,4 +1,4 @@
-name: Build MAWAQIT Player (Optimized)
+name: Build MAWAQIT Player (Maximum Compression)
 
 on:
   push:
@@ -6,14 +6,155 @@ on:
   workflow_dispatch:
 
 jobs:
+  # === JOB 1: Linux - Trim Android system and recompress ===
+  trim-android:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install tools
+      run: sudo apt-get install -y squashfs-tools p7zip-full
+
+    - name: Download Android-x86 ISO
+      run: |
+        echo "Downloading Android-x86 9.0 32-bit..."
+        MIRRORS=(
+          "https://netcologne.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso"
+          "https://netix.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso"
+          "https://kumisystems.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso"
+          "https://phoenixnap.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso"
+          "https://jaist.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso"
+        )
+        for url in "${MIRRORS[@]}"; do
+          echo "Trying: $url"
+          if curl -L -o android.iso --retry 2 --connect-timeout 30 --max-time 900 "$url"; then
+            SIZE=$(stat -c%s android.iso 2>/dev/null || echo 0)
+            if [ "$SIZE" -gt 500000000 ]; then
+              echo "Download OK! Size: $((SIZE/1048576)) MB"
+              break
+            fi
+          fi
+          rm -f android.iso
+        done
+        [ -f android.iso ] || exit 1
+
+    - name: Extract and trim Android system
+      run: |
+        # Extract ISO
+        7z x android.iso -oiso_extract -y
+        rm android.iso
+        
+        ls -la iso_extract/
+        
+        # Find system.sfs
+        SYSTEM_SFS=$(find iso_extract -name "system.sfs" -o -name "system.img" | head -1)
+        echo "Found: $SYSTEM_SFS"
+        echo "Original size: $(du -h $SYSTEM_SFS | cut -f1)"
+        
+        # Extract squashfs
+        sudo unsquashfs -d system_root "$SYSTEM_SFS"
+        
+        echo "=== Before trimming ==="
+        du -sh system_root/
+        
+        # === REMOVE BLOAT APPS (not needed for MAWAQIT) ===
+        echo "Removing unnecessary apps..."
+        
+        # Remove from /system/app/
+        for app in Browser2 Calendar Camera2 Calculator Clock DeskClock \
+                   Email ExactCalculator Gallery2 HTMLViewer Music \
+                   QuickSearchBox SoundRecorder LatinIME OpenWnn \
+                   PicoTts BasicDreams LiveWallpapers \
+                   LiveWallpapersPicker MagicSmokeWallpapers \
+                   VisualizationWallpapers WallpaperPicker \
+                   PhotoTable Provision; do
+          rm -rf system_root/app/${app}* 2>/dev/null && echo "  Removed app/$app"
+        done
+        
+        # Remove from /system/priv-app/
+        for app in Browser2 Calendar Camera2 Contacts Dialer \
+                   Email Gallery2 Music Telecomm TeleService \
+                   CallLogBackup ManagedProvisioning \
+                   MusicFX Tag CellBroadcastReceiver; do
+          rm -rf system_root/priv-app/${app}* 2>/dev/null && echo "  Removed priv-app/$app"
+        done
+        
+        # Remove media bloat
+        rm -rf system_root/media/wallpaper* 2>/dev/null
+        rm -rf system_root/media/audio/ringtones/* 2>/dev/null
+        rm -rf system_root/media/audio/notifications/* 2>/dev/null
+        rm -rf system_root/media/audio/alarms/* 2>/dev/null
+        rm -rf system_root/media/bootanimation.zip 2>/dev/null
+        echo "  Removed media bloat"
+        
+        # Remove unnecessary fonts (keep Roboto + Noto for Arabic)
+        find system_root/fonts/ -name "*.ttf" \
+          ! -name "Roboto*" \
+          ! -name "NotoSans*" \
+          ! -name "NotoNaskh*" \
+          ! -name "NotoColorEmoji*" \
+          ! -name "DroidSans*" \
+          -delete 2>/dev/null
+        echo "  Trimmed fonts"
+        
+        # Remove test/sample data
+        rm -rf system_root/xbin/* 2>/dev/null
+        rm -rf system_root/usr/share/bmd 2>/dev/null
+        
+        echo "=== After trimming ==="
+        du -sh system_root/
+        
+        # === REPACK with XZ compression (much better than gzip) ===
+        echo "Repacking with XZ compression (this takes a while)..."
+        sudo mksquashfs system_root system_trimmed.sfs \
+          -comp xz \
+          -Xbcj x86 \
+          -b 1048576 \
+          -no-xattrs \
+          -no-exports
+        
+        echo "Original system: $(du -h $SYSTEM_SFS | cut -f1)"
+        echo "Trimmed system:  $(du -h system_trimmed.sfs | cut -f1)"
+        
+        # Prepare output: kernel + initrd + trimmed system
+        mkdir android_files
+        find iso_extract -name "kernel" | head -1 | xargs -I{} cp {} android_files/
+        find iso_extract -name "initrd.img" | head -1 | xargs -I{} cp {} android_files/
+        find iso_extract -name "ramdisk.img" | head -1 | xargs -I{} cp {} android_files/ 2>/dev/null
+        cp system_trimmed.sfs android_files/system.sfs
+        
+        echo "=== Final android_files ==="
+        ls -lh android_files/
+        du -sh android_files/
+
+    - name: Upload trimmed Android files
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-trimmed
+        path: android_files/
+        retention-days: 1
+        compression-level: 0
+
+  # === JOB 2: Windows - Build EXE and package ===
   build:
     runs-on: windows-latest
+    needs: trim-android
     permissions:
       contents: write
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
+
+    - name: Download trimmed Android files
+      uses: actions/download-artifact@v4
+      with:
+        name: android-trimmed
+        path: package/android
+
+    - name: Show Android files
+      run: |
+        Get-ChildItem "package\android" -Recurse | ForEach-Object {
+          Write-Host "$($_.Name): $([math]::Round($_.Length/1MB,1)) MB"
+        }
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -26,23 +167,20 @@ jobs:
     - name: Build EXE
       run: pyinstaller --onefile --windowed --name "XAPK-Player" xapk_player.py
 
-    - name: Download ADB (minimal - 3 files only)
+    - name: Download ADB (minimal)
       run: |
         Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "pt.zip"
-        Expand-Archive -Path "pt.zip" -DestinationPath "temp_pt" -Force
+        Expand-Archive "pt.zip" -DestinationPath "temp_pt" -Force
         mkdir "package\platform-tools" -ErrorAction SilentlyContinue
-        # Only 3 files needed for ADB
         Copy-Item "temp_pt\platform-tools\adb.exe" "package\platform-tools\"
         Copy-Item "temp_pt\platform-tools\AdbWinApi.dll" "package\platform-tools\"
         Copy-Item "temp_pt\platform-tools\AdbWinUsbApi.dll" "package\platform-tools\"
         Remove-Item "pt.zip","temp_pt" -Recurse -Force -ErrorAction SilentlyContinue
-        $s = (Get-ChildItem "package\platform-tools" -Recurse | Measure-Object Length -Sum).Sum/1MB
-        Write-Host "ADB: $([math]::Round($s,1)) MB"
 
-    - name: Download and strip QEMU (x86_64 only)
+    - name: Download and strip QEMU
       run: |
         Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
-        Expand-Archive -Path "qemu.zip" -DestinationPath "temp_qemu" -Force
+        Expand-Archive "qemu.zip" -DestinationPath "temp_qemu" -Force
         Remove-Item "qemu.zip" -Force
 
         $qRoot = "temp_qemu"
@@ -50,113 +188,51 @@ jobs:
           $sub = Get-ChildItem $qRoot -Directory | Select-Object -First 1
           if ($sub) { $qRoot = $sub.FullName }
         }
-        $fullSize = (Get-ChildItem $qRoot -Recurse | Measure-Object Length -Sum).Sum/1MB
-        Write-Host "Full QEMU: $([math]::Round($fullSize,1)) MB"
 
         mkdir "package\qemu" -ErrorAction SilentlyContinue
 
-        # Only x86_64 emulator + image tool
+        # Only x86_64 executables
         Copy-Item "$qRoot\qemu-system-x86_64.exe" "package\qemu\"
         Copy-Item "$qRoot\qemu-img.exe" "package\qemu\"
-
-        # All shared DLLs (needed by the exe)
         Get-ChildItem "$qRoot\*.dll" | Copy-Item -Destination "package\qemu\"
 
-        # Essential x86 firmware only
+        # Essential firmware only
         if (Test-Path "$qRoot\share") {
           mkdir "package\qemu\share" -ErrorAction SilentlyContinue
           @("bios-256k.bin","bios.bin","vgabios-virtio.bin","vgabios-stdvga.bin",
             "vgabios.bin","efi-virtio.rom","kvmvapic.bin","linuxboot.bin",
-            "linuxboot_dma.bin","efi-e1000.rom","efi-e1000e.rom","keymaps"
+            "linuxboot_dma.bin","efi-e1000.rom","keymaps"
           ) | ForEach-Object {
             $src = "$qRoot\share\$_"
-            if (Test-Path $src) {
-              Copy-Item $src "package\qemu\share\" -Recurse
-            }
+            if (Test-Path $src) { Copy-Item $src "package\qemu\share\" -Recurse }
           }
         }
-
         Remove-Item "temp_qemu" -Recurse -Force -ErrorAction SilentlyContinue
-        $minSize = (Get-ChildItem "package\qemu" -Recurse | Measure-Object Length -Sum).Sum/1MB
-        Write-Host "Stripped QEMU: $([math]::Round($minSize,1)) MB (saved $([math]::Round($fullSize-$minSize,1)) MB)"
 
-    - name: Download Android-x86 and extract essentials
-      run: |
-        # Use 32-bit ISO (726 MB vs 921 MB for 64-bit = 200 MB saved)
-        Write-Host "Downloading Android-x86 9.0 (32-bit)..."
-        
-        # Direct CDN mirror URLs (bypass SourceForge Cloudflare)
-        $mirrors = @(
-          "https://netcologne.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://netix.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://kumisystems.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://phoenixnap.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://jaist.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://osdn.net/dl/android-x86/android-x86-9.0-r2.iso"
-        )
-        
-        $downloaded = $false
-        foreach ($url in $mirrors) {
-          Write-Host "Trying: $url"
-          try {
-            curl.exe -L -o "android.iso" -# --retry 2 --retry-delay 3 --connect-timeout 30 --max-time 600 "$url"
-            if ((Test-Path "android.iso") -and (Get-Item "android.iso").Length -gt 500MB) {
-              $downloaded = $true
-              Write-Host "Download OK! Size: $([math]::Round((Get-Item 'android.iso').Length/1MB,1)) MB"
-              break
-            }
-            Write-Host "File too small or missing, trying next..."
-            Remove-Item "android.iso" -ErrorAction SilentlyContinue
-          } catch {
-            Write-Host "Mirror failed: $_"
-          }
-        }
-        
-        if (-not $downloaded) { throw "All mirrors failed! Check network." }
-        
-        $isoSize = (Get-Item "android.iso").Length/1MB
-        Write-Host "ISO size: $([math]::Round($isoSize,1)) MB"
-        
-        # Extract only essential boot files (skip bootloader/EFI/installer)
-        Write-Host "Extracting essential files from ISO..."
-        & "C:\Program Files\7-Zip\7z.exe" x "android.iso" -o"iso_extract" -y
-        
-        mkdir "package\android" -ErrorAction SilentlyContinue
-        
-        # Copy only what's needed to boot Android
-        $essentials = @("kernel","initrd.img","ramdisk.img","system.sfs","system.img")
-        foreach ($f in $essentials) {
-          # Files might be at root or in subdirectory
-          $found = Get-ChildItem "iso_extract" -Recurse -Filter $f | Select-Object -First 1
-          if ($found) {
-            Copy-Item $found.FullName "package\android\"
-            Write-Host "  Kept: $f ($([math]::Round($found.Length/1MB,1)) MB)"
-          }
-        }
-        
-        Remove-Item "android.iso","iso_extract" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        $androidSize = (Get-ChildItem "package\android" -Recurse | Measure-Object Length -Sum).Sum/1MB
-        Write-Host "Android essentials: $([math]::Round($androidSize,1)) MB (saved bootloader/EFI/installer overhead)"
+        $s = (Get-ChildItem "package\qemu" -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "Stripped QEMU: $([math]::Round($s,1)) MB"
 
     - name: Assemble Package
       run: |
         Copy-Item "dist\XAPK-Player.exe" "package\XAPK-Player.exe"
         mkdir "package\data" -ErrorAction SilentlyContinue
-        
-        @"
-        ===================================
-        XAPK Player - مشغل تطبيقات أندرويد
-        ===================================
-        
-        الاستخدام:
-        1. شغّل XAPK-Player.exe
-        2. اختر ملف XAPK أو APK
-        3. اضغط تشغيل
-        
-        كل شيء مدمج - لا يحتاج تحميل أو تثبيت!
-        "@ | Out-File "package\README.txt" -Encoding UTF8
-        
+
+    - name: UPX compress all binaries
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive "upx.zip" -DestinationPath "upx_temp" -Force
+        $upx = (Get-ChildItem "upx_temp" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
+
+        Get-ChildItem "package" -Recurse -Include "*.exe","*.dll" | Where-Object { $_.Length -gt 500KB } | ForEach-Object {
+          $before = $_.Length/1MB
+          & $upx --best --lzma $_.FullName 2>$null
+          $after = (Get-Item $_.FullName).Length/1MB
+          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
+        }
+        Remove-Item "upx.zip","upx_temp" -Recurse -Force -ErrorAction SilentlyContinue
+
+    - name: Show package breakdown
+      run: |
         Write-Host "`n=== PACKAGE BREAKDOWN ==="
         $total = 0
         Get-ChildItem "package" | ForEach-Object {
@@ -166,50 +242,11 @@ jobs:
           $total += $s
           Write-Host "  $($_.Name): $([math]::Round($s,1)) MB"
         }
-        Write-Host "  TOTAL: $([math]::Round($total,1)) MB"
+        Write-Host "  TOTAL (before 7z): $([math]::Round($total,1)) MB"
 
-    - name: Compress EXEs with UPX (shrink binaries 50-70%)
+    - name: 7z MAXIMUM compression
       run: |
-        # Download UPX
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
-        Expand-Archive "upx.zip" -DestinationPath "upx_temp" -Force
-        $upx = (Get-ChildItem "upx_temp" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
-        
-        Write-Host "=== Compressing EXE/DLL files with UPX ==="
-        
-        # Compress all EXE files
-        Get-ChildItem "package" -Recurse -Filter "*.exe" | ForEach-Object {
-          $before = $_.Length/1MB
-          & $upx --best --lzma $_.FullName 2>$null
-          $after = (Get-Item $_.FullName).Length/1MB
-          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
-        }
-        
-        # Compress large DLL files (>1MB)
-        Get-ChildItem "package" -Recurse -Filter "*.dll" | Where-Object { $_.Length -gt 1MB } | ForEach-Object {
-          $before = $_.Length/1MB
-          & $upx --best --lzma $_.FullName 2>$null
-          $after = (Get-Item $_.FullName).Length/1MB
-          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
-        }
-        
-        Remove-Item "upx.zip","upx_temp" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        $newTotal = (Get-ChildItem "package" -Recurse | Measure-Object Length -Sum).Sum/1MB
-        Write-Host "Package after UPX: $([math]::Round($newTotal,1)) MB"
-
-    - name: Create 7z MAXIMUM Compressed Package
-      run: |
-        # ABSOLUTE MAXIMUM 7z compression settings:
-        # -m0=lzma2    : LZMA2 algorithm (best for mixed content)
-        # -mx=9        : Ultra compression level
-        # -mfb=273     : Maximum fast bytes (word size)
-        # -md=512m     : 512MB dictionary (huge = better compression)
-        # -ms=on       : Solid archive (compress files together)
-        # -mqs=on      : Sort files by type (better solid compression)
-        # -mmt=2       : 2 threads (fewer = slightly better compression)
-        & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=512m -ms=on -mqs=on -mmt=2 "MAWAQIT-Player.7z" ".\package\*"
-        
+        & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=256m -ms=on -mqs=on -mmt=2 "MAWAQIT-Player.7z" ".\package\*"
         $sz = (Get-Item "MAWAQIT-Player.7z").Length/1MB
         Write-Host "`n==========================================="
         Write-Host "  FINAL ARCHIVE: $([math]::Round($sz,1)) MB"
@@ -233,23 +270,18 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v3.0.0
-        name: "MAWAQIT Player v3.0.0"
+        tag_name: v3.1.0
+        name: "MAWAQIT Player v3.1.0 - Ultra Compressed"
         body: |
           ## MAWAQIT Player 📱
           
-          حزمة مُحسّنة وخفيفة - كل شيء مدمج!
+          حزمة مضغوطة بأقصى ضغط ممكن!
           
           ### التحسينات:
-          - 🗜️ ضغط 7z LZMA2 Ultra
-          - ✂️ QEMU مصغّر (x86_64 فقط)
-          - 📦 Android 32-bit (أخف)
-          - 🚀 ملفات التشغيل الأساسية فقط
-          
-          ### الاستخدام:
-          1. حمّل `MAWAQIT-Player.7z`
-          2. فك الضغط
-          3. شغّل `XAPK-Player.exe`
+          - 🔧 Android مُقلّص (حذف التطبيقات الزائدة)
+          - 🗜️ إعادة ضغط النظام بـ XZ (أقوى من gzip)
+          - ✂️ QEMU مصغّر + UPX
+          - 📦 7z LZMA2 Ultra
         files: MAWAQIT-Player.7z
         make_latest: true
       env:
