@@ -28,7 +28,11 @@ APP_DIR = get_app_dir()
 QEMU_EXE = os.path.join(APP_DIR, "qemu", "qemu-system-x86_64.exe")
 QEMU_IMG_EXE = os.path.join(APP_DIR, "qemu", "qemu-img.exe")
 ADB_EXE = os.path.join(APP_DIR, "platform-tools", "adb.exe")
-ANDROID_ISO = os.path.join(APP_DIR, "android", "android-x86.iso")
+ANDROID_DIR = os.path.join(APP_DIR, "android")
+ANDROID_ISO = os.path.join(ANDROID_DIR, "android-x86.iso")
+ANDROID_KERNEL = os.path.join(ANDROID_DIR, "kernel")
+ANDROID_INITRD = os.path.join(ANDROID_DIR, "initrd.img")
+ANDROID_SYSTEM = os.path.join(ANDROID_DIR, "system.sfs")
 DATA_DIR = os.path.join(APP_DIR, "data")
 DATA_DISK = os.path.join(DATA_DIR, "userdata.qcow2")
 EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "xapk_extract")
@@ -127,10 +131,12 @@ class XAPKPlayer:
 
     def _check_files(self):
         """Check if all required files exist in the app folder"""
+        # Support both extracted files (kernel+system.sfs) and full ISO
+        has_android = (os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_SYSTEM)) or os.path.isfile(ANDROID_ISO)
         checks = {
             "QEMU": os.path.isfile(QEMU_EXE),
             "ADB": os.path.isfile(ADB_EXE),
-            "Android": os.path.isfile(ANDROID_ISO),
+            "Android": has_android,
         }
 
         parts = []
@@ -201,8 +207,6 @@ class XAPKPlayer:
             QEMU_EXE,
             "-m", QEMU_RAM,
             "-smp", QEMU_CORES,
-            "-cdrom", ANDROID_ISO,
-            "-boot", "d",
             "-net", "nic,model=virtio",
             "-net", f"user,hostfwd=tcp::{ADB_FWD_PORT}-:5555",
             "-display", "sdl",
@@ -211,8 +215,20 @@ class XAPKPlayer:
             "-machine", "q35",
         ]
 
+        # Use extracted files (smaller) or fall back to full ISO
+        if os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD):
+            android_path = ANDROID_DIR.replace("\\", "/")
+            cmd.extend([
+                "-kernel", ANDROID_KERNEL,
+                "-initrd", ANDROID_INITRD,
+                "-append", "root=/dev/ram0 androidboot.selinux=permissive quiet SRC=/ vga=788",
+                "-drive", f"file=fat:rw:{android_path},format=vvfat,if=ide",
+            ])
+        else:
+            cmd.extend(["-cdrom", ANDROID_ISO, "-boot", "d"])
+
         if os.path.isfile(DATA_DISK):
-            cmd.extend(["-hda", DATA_DISK])
+            cmd.extend(["-hdb", DATA_DISK])
 
         # Check acceleration
         try:

@@ -1,4 +1,4 @@
-name: Build XAPK Player (Full Package)
+name: Build MAWAQIT Player (Optimized)
 
 on:
   push:
@@ -26,46 +26,96 @@ jobs:
     - name: Build EXE
       run: pyinstaller --onefile --windowed --name "XAPK-Player" xapk_player.py
 
-    - name: Download ADB Platform-Tools
+    - name: Download ADB (minimal - 3 files only)
       run: |
-        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip"
-        Expand-Archive -Path "platform-tools.zip" -DestinationPath "package" -Force
-        Remove-Item "platform-tools.zip"
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "pt.zip"
+        Expand-Archive -Path "pt.zip" -DestinationPath "temp_pt" -Force
+        mkdir "package\platform-tools" -ErrorAction SilentlyContinue
+        # Only 3 files needed for ADB
+        Copy-Item "temp_pt\platform-tools\adb.exe" "package\platform-tools\"
+        Copy-Item "temp_pt\platform-tools\AdbWinApi.dll" "package\platform-tools\"
+        Copy-Item "temp_pt\platform-tools\AdbWinUsbApi.dll" "package\platform-tools\"
+        Remove-Item "pt.zip","temp_pt" -Recurse -Force -ErrorAction SilentlyContinue
+        $s = (Get-ChildItem "package\platform-tools" -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "ADB: $([math]::Round($s,1)) MB"
 
-    - name: Download QEMU
+    - name: Download and strip QEMU (x86_64 only)
       run: |
-        # Download portable QEMU for Windows (from dirkarnez/qemu-portable)
         Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
-        Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
-        Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
-        # Verify
-        if (Test-Path "package/qemu/qemu-system-x86_64.exe") {
-          Write-Host "QEMU OK"
-        } else {
-          # Files might be in a subfolder
-          $sub = Get-ChildItem -Path "package/qemu" -Directory | Select-Object -First 1
-          if ($sub) {
-            Get-ChildItem -Path $sub.FullName | Move-Item -Destination "package/qemu/" -Force
-            Remove-Item $sub.FullName -Recurse -ErrorAction SilentlyContinue
+        Expand-Archive -Path "qemu.zip" -DestinationPath "temp_qemu" -Force
+        Remove-Item "qemu.zip" -Force
+
+        $qRoot = "temp_qemu"
+        if (-not (Test-Path "$qRoot\qemu-system-x86_64.exe")) {
+          $sub = Get-ChildItem $qRoot -Directory | Select-Object -First 1
+          if ($sub) { $qRoot = $sub.FullName }
+        }
+        $fullSize = (Get-ChildItem $qRoot -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "Full QEMU: $([math]::Round($fullSize,1)) MB"
+
+        mkdir "package\qemu" -ErrorAction SilentlyContinue
+
+        # Only x86_64 emulator + image tool
+        Copy-Item "$qRoot\qemu-system-x86_64.exe" "package\qemu\"
+        Copy-Item "$qRoot\qemu-img.exe" "package\qemu\"
+
+        # All shared DLLs (needed by the exe)
+        Get-ChildItem "$qRoot\*.dll" | Copy-Item -Destination "package\qemu\"
+
+        # Essential x86 firmware only
+        if (Test-Path "$qRoot\share") {
+          mkdir "package\qemu\share" -ErrorAction SilentlyContinue
+          @("bios-256k.bin","bios.bin","vgabios-virtio.bin","vgabios-stdvga.bin",
+            "vgabios.bin","efi-virtio.rom","kvmvapic.bin","linuxboot.bin",
+            "linuxboot_dma.bin","efi-e1000.rom","efi-e1000e.rom","keymaps"
+          ) | ForEach-Object {
+            $src = "$qRoot\share\$_"
+            if (Test-Path $src) {
+              Copy-Item $src "package\qemu\share\" -Recurse
+            }
           }
-          Write-Host "Files moved to package/qemu/"
         }
 
-    - name: Download Android-x86 ISO
+        Remove-Item "temp_qemu" -Recurse -Force -ErrorAction SilentlyContinue
+        $minSize = (Get-ChildItem "package\qemu" -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "Stripped QEMU: $([math]::Round($minSize,1)) MB (saved $([math]::Round($fullSize-$minSize,1)) MB)"
+
+    - name: Download Android-x86 and extract essentials
       run: |
-        mkdir "package/android" -ErrorAction SilentlyContinue
-        # Download Android-x86 9.0 r2 (stable, ~900MB)
-        Invoke-WebRequest -Uri "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download" -OutFile "package/android/android-x86.iso" -UserAgent "Mozilla/5.0"
+        # Use 32-bit ISO (726 MB vs 921 MB for 64-bit = 200 MB saved)
+        Write-Host "Downloading Android-x86 9.0 (32-bit)..."
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86-9.0-r2.iso/download" -OutFile "android.iso" -UserAgent "Mozilla/5.0"
+        
+        $isoSize = (Get-Item "android.iso").Length/1MB
+        Write-Host "ISO size: $([math]::Round($isoSize,1)) MB"
+        
+        # Extract only essential boot files (skip bootloader/EFI/installer)
+        Write-Host "Extracting essential files from ISO..."
+        & "C:\Program Files\7-Zip\7z.exe" x "android.iso" -o"iso_extract" -y
+        
+        mkdir "package\android" -ErrorAction SilentlyContinue
+        
+        # Copy only what's needed to boot Android
+        $essentials = @("kernel","initrd.img","ramdisk.img","system.sfs","system.img")
+        foreach ($f in $essentials) {
+          # Files might be at root or in subdirectory
+          $found = Get-ChildItem "iso_extract" -Recurse -Filter $f | Select-Object -First 1
+          if ($found) {
+            Copy-Item $found.FullName "package\android\"
+            Write-Host "  Kept: $f ($([math]::Round($found.Length/1MB,1)) MB)"
+          }
+        }
+        
+        Remove-Item "android.iso","iso_extract" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        $androidSize = (Get-ChildItem "package\android" -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "Android essentials: $([math]::Round($androidSize,1)) MB (saved bootloader/EFI/installer overhead)"
 
     - name: Assemble Package
       run: |
-        # Copy EXE to package root
-        Copy-Item "dist/XAPK-Player.exe" -Destination "package/XAPK-Player.exe"
+        Copy-Item "dist\XAPK-Player.exe" "package\XAPK-Player.exe"
+        mkdir "package\data" -ErrorAction SilentlyContinue
         
-        # Create data folder
-        mkdir "package/data" -ErrorAction SilentlyContinue
-        
-        # Create README
         @"
         ===================================
         XAPK Player - مشغل تطبيقات أندرويد
@@ -76,42 +126,66 @@ jobs:
         2. اختر ملف XAPK أو APK
         3. اضغط تشغيل
         
-        لا يحتاج تثبيت أي شيء إضافي!
-        "@ | Out-File -FilePath "package/README.txt" -Encoding UTF8
+        كل شيء مدمج - لا يحتاج تحميل أو تثبيت!
+        "@ | Out-File "package\README.txt" -Encoding UTF8
+        
+        Write-Host "`n=== PACKAGE BREAKDOWN ==="
+        $total = 0
+        Get-ChildItem "package" | ForEach-Object {
+          if ($_.PSIsContainer) {
+            $s = (Get-ChildItem $_.FullName -Recurse | Measure-Object Length -Sum).Sum/1MB
+          } else { $s = $_.Length/1MB }
+          $total += $s
+          Write-Host "  $($_.Name): $([math]::Round($s,1)) MB"
+        }
+        Write-Host "  TOTAL: $([math]::Round($total,1)) MB"
 
-    - name: Create ZIP Package
+    - name: Create 7z Ultra-Compressed Package
       run: |
-        Compress-Archive -Path "package/*" -DestinationPath "XAPK-Player-Full.zip" -Force
+        # 7z LZMA2 Ultra: best compression for this type of content
+        & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=128m -ms=on "MAWAQIT-Player.7z" ".\package\*"
+        
+        $sz = (Get-Item "MAWAQIT-Player.7z").Length/1MB
+        Write-Host "`n==========================================="
+        Write-Host "  FINAL ARCHIVE: $([math]::Round($sz,1)) MB"
+        Write-Host "==========================================="
 
-    - name: Upload Package as Artifact
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: XAPK-Player-Full
-        path: XAPK-Player-Full.zip
+        name: MAWAQIT-Player
+        path: MAWAQIT-Player.7z
         retention-days: 30
+
+    - name: Delete old releases
+      uses: dev-drprasad/delete-older-releases@v0.3.4
+      with:
+        keep_latest: 0
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v2.0.0
-        name: "XAPK Player v2.0.0 - حزمة كاملة"
+        tag_name: v3.0.0
+        name: "MAWAQIT Player v3.0.0"
         body: |
-          ## XAPK Player - مشغل تطبيقات أندرويد 📱
+          ## MAWAQIT Player 📱
           
-          حزمة كاملة تحتوي على كل شيء - لا يحتاج تثبيت أي شيء!
+          حزمة مُحسّنة وخفيفة - كل شيء مدمج!
           
-          ### المحتويات:
-          - ✅ XAPK Player (واجهة التشغيل)
-          - ✅ QEMU (محاكي مدمج)
-          - ✅ Android-x86 (نظام أندرويد)
-          - ✅ ADB (أدوات الاتصال)
+          ### التحسينات:
+          - 🗜️ ضغط 7z LZMA2 Ultra
+          - ✂️ QEMU مصغّر (x86_64 فقط)
+          - 📦 Android 32-bit (أخف)
+          - 🚀 ملفات التشغيل الأساسية فقط
           
           ### الاستخدام:
-          1. حمّل `XAPK-Player-Full.zip`
+          1. حمّل `MAWAQIT-Player.7z`
           2. فك الضغط
           3. شغّل `XAPK-Player.exe`
-          4. اختر ملف XAPK واضغط تشغيل
-        files: XAPK-Player-Full.zip
+        files: MAWAQIT-Player.7z
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
