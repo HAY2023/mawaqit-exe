@@ -85,30 +85,34 @@ jobs:
         # Use 32-bit ISO (726 MB vs 921 MB for 64-bit = 200 MB saved)
         Write-Host "Downloading Android-x86 9.0 (32-bit)..."
         
-        # Try multiple mirrors (SourceForge has Cloudflare issues)
+        # Direct CDN mirror URLs (bypass SourceForge Cloudflare)
         $mirrors = @(
-          "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
-          "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86-9.0-r2.iso/download",
-          "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download"
+          "https://netcologne.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://netix.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://kumisystems.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://phoenixnap.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://jaist.dl.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://osdn.net/dl/android-x86/android-x86-9.0-r2.iso"
         )
         
         $downloaded = $false
         foreach ($url in $mirrors) {
           Write-Host "Trying: $url"
           try {
-            curl.exe -L -o "android.iso" -# --retry 3 --retry-delay 5 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$url"
-            if ((Test-Path "android.iso") -and (Get-Item "android.iso").Length -gt 100MB) {
+            curl.exe -L -o "android.iso" -# --retry 2 --retry-delay 3 --connect-timeout 30 --max-time 600 "$url"
+            if ((Test-Path "android.iso") -and (Get-Item "android.iso").Length -gt 500MB) {
               $downloaded = $true
-              Write-Host "Download OK!"
+              Write-Host "Download OK! Size: $([math]::Round((Get-Item 'android.iso').Length/1MB,1)) MB"
               break
             }
+            Write-Host "File too small or missing, trying next..."
             Remove-Item "android.iso" -ErrorAction SilentlyContinue
           } catch {
             Write-Host "Mirror failed: $_"
           }
         }
         
-        if (-not $downloaded) { throw "All mirrors failed!" }
+        if (-not $downloaded) { throw "All mirrors failed! Check network." }
         
         $isoSize = (Get-Item "android.iso").Length/1MB
         Write-Host "ISO size: $([math]::Round($isoSize,1)) MB"
