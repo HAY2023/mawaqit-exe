@@ -1,4 +1,4 @@
-name: Build MAWAQIT XAPK Player
+name: Build MAWAQIT XAPK Player (Compact)
 
 on:
   push:
@@ -48,7 +48,7 @@ jobs:
     - name: Build XAPK Player EXE
       run: pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
 
-    - name: Download ADB
+    - name: Download ADB (minimal)
       run: |
         curl -L -o pt.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
         Expand-Archive pt.zip -DestinationPath "package" -Force
@@ -73,82 +73,18 @@ jobs:
         }
         Remove-Item "temp_qemu" -Recurse -Force
 
-    - name: Install aria2c
-      run: choco install aria2 -y --no-progress
-
-    - name: Download smallest Android-x86
-      timeout-minutes: 25
-      run: |
-        mkdir "package/android" -ErrorAction SilentlyContinue
-        $outFile = "package/android/android-x86.iso"
-        
-        # Try from smallest to largest - use first that works
-        $versions = @(
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"; min=250; name="4.4 (~350MB)"},
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%207.1/android-x86_64-7.1-r5.iso"; min=500; name="7.1 (~700MB)"},
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%208.1/android-x86_64-8.1-r6.iso"; min=600; name="8.1 (~800MB)"},
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"; min=800; name="9.0 (~920MB)"}
-        )
-        
-        $success = $false
-        foreach ($ver in $versions) {
-          Write-Host "`n=== Trying Android-x86 $($ver.name) ==="
-          Remove-Item $outFile -ErrorAction SilentlyContinue
-          
-          aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none --console-log-level=notice -d "package/android" -o "android-x86.iso" $ver.url 2>&1
-          
-          if (Test-Path $outFile) {
-            $size = (Get-Item $outFile).Length / 1MB
-            Write-Host "Size: $([math]::Round($size, 1)) MB (need > $($ver.min) MB)"
-            if ($size -gt $ver.min) {
-              Write-Host "SUCCESS with Android $($ver.name)!"
-              $success = $true
-              break
-            } else {
-              Write-Host "File too small, skipping..."
-            }
-          } else {
-            Write-Host "No file produced, skipping..."
-          }
-        }
-        
-        if (-not $success) {
-          Write-Host "ERROR: Could not download any Android-x86 version"
-          exit 1
-        }
-
-    - name: Extract essential files from ISO
-      run: |
-        $iso = "package/android/android-x86.iso"
-        $dest = "package/android"
-        
-        # Extract only boot files from ISO (skip ISO overhead)
-        Write-Host "Extracting essential files from ISO..."
-        7z e $iso -o"$dest" kernel initrd.img ramdisk.img system.sfs system.img install.img -r -y 2>&1
-        
-        # Check what we got
-        Get-ChildItem $dest | ForEach-Object {
-          Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 1)) MB"
-        }
-        
-        # If extraction worked, remove ISO to save space
-        if ((Test-Path "$dest/kernel") -or (Test-Path "$dest/system.sfs") -or (Test-Path "$dest/system.img")) {
-          Remove-Item $iso -Force
-          Write-Host "ISO removed, using extracted files"
-        } else {
-          Write-Host "Keeping full ISO (extraction didn't find expected files)"
-        }
-
-    - name: Assemble and Compress
+    - name: Assemble Compact Package
       run: |
         Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
+        mkdir "package/android" -ErrorAction SilentlyContinue
         mkdir "package/data" -ErrorAction SilentlyContinue
         
+        # Android will be downloaded on first run
+        Write-Host "=== Package (no Android ISO - downloaded at first run) ==="
         $total = (Get-ChildItem "package" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "Total uncompressed: $([math]::Round($total, 1)) MB"
+        Write-Host "Total: $([math]::Round($total, 1)) MB"
         
-        # Maximum 7z compression
-        7z a -t7z -mx=9 -mfb=273 -ms=on -md=64m "MAWAQIT-Player.7z" "./package/*"
+        7z a -t7z -mx=9 -mfb=273 -ms=on "MAWAQIT-Player.7z" "./package/*"
         $s = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
         Write-Host "Final 7z: $([math]::Round($s, 1)) MB"
 
@@ -169,13 +105,16 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v3.5.0
-        name: "MAWAQIT Player v3.5.0"
+        name: "MAWAQIT Player v3.5.0 (Compact)"
         body: |
-          ## 🕌 MAWAQIT Player
+          ## 🕌 MAWAQIT Player - نسخة خفيفة (~80 MB)
+          
+          ### الاستخدام:
           1. حمّل `MAWAQIT-Player.7z`
           2. فك الضغط بـ 7-Zip
           3. شغّل `MAWAQIT-Player.exe`
-          4. اختر XAPK واضغط 🚀 تشغيل
+          4. أول مرة: سيحمّل نظام أندرويد تلقائياً
+          5. اختر ملف XAPK واضغط 🚀 تشغيل
         files: MAWAQIT-Player.7z
         make_latest: true
       env:

@@ -148,9 +148,61 @@ class XAPKPlayer:
 
         all_ok = all(checks.values())
         if not all_ok:
-            self._msg("⚠️ ملفات ناقصة! تأكد من وجود مجلدات qemu و platform-tools و android", "#f85149")
+            if not has_android and os.path.isfile(QEMU_EXE):
+                self._msg("📥 نظام أندرويد غير موجود - اضغط تحميل", "#e3b341")
+                self.run_btn.config(text="📥 تحميل أندرويد", state="normal", command=self._download_android)
+            else:
+                self._msg("⚠️ ملفات ناقصة! تأكد من وجود مجلدات qemu و platform-tools و android", "#f85149")
 
         return all_ok
+
+    def _download_android(self):
+        """Download Android-x86 ISO on first run"""
+        self.run_btn.config(state="disabled", text="⏳ جاري التحميل...")
+        self.progress.start(10)
+
+        def download():
+            import urllib.request
+            url = "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+            os.makedirs(os.path.dirname(ANDROID_ISO), exist_ok=True)
+            
+            try:
+                self._msg("📥 جاري تحميل نظام أندرويد (~900 MB)...")
+                
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                response = urllib.request.urlopen(req, timeout=600)
+                total = int(response.headers.get('Content-Length', 0))
+                downloaded = 0
+                
+                with open(ANDROID_ISO, 'wb') as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)  # 1MB chunks
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        pct = int(downloaded * 100 / total) if total else 0
+                        mb = downloaded / (1024 * 1024)
+                        self._msg(f"📥 تحميل: {mb:.0f} MB / {total/1024/1024:.0f} MB ({pct}%)")
+                
+                self._msg("✅ تم تحميل أندرويد بنجاح!")
+                self.root.after(0, self._after_download)
+                
+            except Exception as e:
+                self._msg(f"❌ فشل التحميل: {e}", "#f85149")
+                if os.path.exists(ANDROID_ISO):
+                    os.remove(ANDROID_ISO)
+            finally:
+                self.progress.stop()
+
+        threading.Thread(target=download, daemon=True).start()
+
+    def _after_download(self):
+        """Called after Android download completes"""
+        self.run_btn.config(text="🚀 تشغيل", command=self._start)
+        self._check_files()
+        if os.path.isfile(ANDROID_ISO):
+            self.run_btn.config(state="normal")
 
     def _msg(self, text, color="#3fb950"):
         self.log.config(text=text, fg=color)
