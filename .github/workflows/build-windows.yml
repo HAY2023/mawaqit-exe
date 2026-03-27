@@ -140,10 +140,47 @@ jobs:
         }
         Write-Host "  TOTAL: $([math]::Round($total,1)) MB"
 
-    - name: Create 7z Ultra-Compressed Package
+    - name: Compress EXEs with UPX (shrink binaries 50-70%)
       run: |
-        # 7z LZMA2 Ultra: best compression for this type of content
-        & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=128m -ms=on "MAWAQIT-Player.7z" ".\package\*"
+        # Download UPX
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive "upx.zip" -DestinationPath "upx_temp" -Force
+        $upx = (Get-ChildItem "upx_temp" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
+        
+        Write-Host "=== Compressing EXE/DLL files with UPX ==="
+        
+        # Compress all EXE files
+        Get-ChildItem "package" -Recurse -Filter "*.exe" | ForEach-Object {
+          $before = $_.Length/1MB
+          & $upx --best --lzma $_.FullName 2>$null
+          $after = (Get-Item $_.FullName).Length/1MB
+          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
+        }
+        
+        # Compress large DLL files (>1MB)
+        Get-ChildItem "package" -Recurse -Filter "*.dll" | Where-Object { $_.Length -gt 1MB } | ForEach-Object {
+          $before = $_.Length/1MB
+          & $upx --best --lzma $_.FullName 2>$null
+          $after = (Get-Item $_.FullName).Length/1MB
+          Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
+        }
+        
+        Remove-Item "upx.zip","upx_temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        $newTotal = (Get-ChildItem "package" -Recurse | Measure-Object Length -Sum).Sum/1MB
+        Write-Host "Package after UPX: $([math]::Round($newTotal,1)) MB"
+
+    - name: Create 7z MAXIMUM Compressed Package
+      run: |
+        # ABSOLUTE MAXIMUM 7z compression settings:
+        # -m0=lzma2    : LZMA2 algorithm (best for mixed content)
+        # -mx=9        : Ultra compression level
+        # -mfb=273     : Maximum fast bytes (word size)
+        # -md=512m     : 512MB dictionary (huge = better compression)
+        # -ms=on       : Solid archive (compress files together)
+        # -mqs=on      : Sort files by type (better solid compression)
+        # -mmt=2       : 2 threads (fewer = slightly better compression)
+        & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=512m -ms=on -mqs=on -mmt=2 "MAWAQIT-Player.7z" ".\package\*"
         
         $sz = (Get-Item "MAWAQIT-Player.7z").Length/1MB
         Write-Host "`n==========================================="
