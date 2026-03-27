@@ -1,4 +1,4 @@
-name: Build XAPK Player (Full Package)
+name: Build MAWAQIT TV for Windows
 
 on:
   push:
@@ -20,98 +20,62 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install PyInstaller
-      run: pip install pyinstaller
-
-    - name: Build EXE
-      run: pyinstaller --onefile --windowed --name "XAPK-Player" xapk_player.py
-
-    - name: Download ADB Platform-Tools
+    - name: Install Dependencies
       run: |
-        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip"
-        Expand-Archive -Path "platform-tools.zip" -DestinationPath "package" -Force
-        Remove-Item "platform-tools.zip"
+        python -m pip install --upgrade pip
+        pip install pyinstaller pywebview
 
-    - name: Download QEMU
+    - name: Build MAWAQIT EXE
       run: |
-        # Download portable QEMU for Windows (from dirkarnez/qemu-portable)
-        Invoke-WebRequest -Uri "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip" -OutFile "qemu.zip"
-        Expand-Archive -Path "qemu.zip" -DestinationPath "package/qemu" -Force
-        Remove-Item "qemu.zip" -ErrorAction SilentlyContinue
-        # Verify
-        if (Test-Path "package/qemu/qemu-system-x86_64.exe") {
-          Write-Host "QEMU OK"
+        pyinstaller --onefile --windowed --name MAWAQIT mawaqit.py
+
+    - name: Verify Build
+      run: |
+        if (Test-Path "dist/MAWAQIT.exe") {
+          $size = (Get-Item "dist/MAWAQIT.exe").Length / 1MB
+          Write-Host "Build successful! MAWAQIT.exe size: $([math]::Round($size, 1)) MB"
         } else {
-          # Files might be in a subfolder
-          $sub = Get-ChildItem -Path "package/qemu" -Directory | Select-Object -First 1
-          if ($sub) {
-            Get-ChildItem -Path $sub.FullName | Move-Item -Destination "package/qemu/" -Force
-            Remove-Item $sub.FullName -Recurse -ErrorAction SilentlyContinue
-          }
-          Write-Host "Files moved to package/qemu/"
+          Write-Host "Build FAILED!"
+          exit 1
         }
 
-    - name: Download Android-x86 ISO
-      run: |
-        mkdir "package/android" -ErrorAction SilentlyContinue
-        # Download Android-x86 9.0 r2 (stable, ~900MB)
-        Invoke-WebRequest -Uri "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download" -OutFile "package/android/android-x86.iso" -UserAgent "Mozilla/5.0"
-
-    - name: Assemble Package
-      run: |
-        # Copy EXE to package root
-        Copy-Item "dist/XAPK-Player.exe" -Destination "package/XAPK-Player.exe"
-        
-        # Create data folder
-        mkdir "package/data" -ErrorAction SilentlyContinue
-        
-        # Create README
-        @"
-        ===================================
-        XAPK Player - مشغل تطبيقات أندرويد
-        ===================================
-        
-        الاستخدام:
-        1. شغّل XAPK-Player.exe
-        2. اختر ملف XAPK أو APK
-        3. اضغط تشغيل
-        
-        لا يحتاج تثبيت أي شيء إضافي!
-        "@ | Out-File -FilePath "package/README.txt" -Encoding UTF8
-
-    - name: Create ZIP Package
-      run: |
-        Compress-Archive -Path "package/*" -DestinationPath "XAPK-Player-Full.zip" -Force
-
-    - name: Upload Package as Artifact
+    - name: Upload EXE as Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: XAPK-Player-Full
-        path: XAPK-Player-Full.zip
-        retention-days: 30
+        name: MAWAQIT-Windows
+        path: dist/MAWAQIT.exe
+        retention-days: 90
+
+    - name: Delete old release if exists
+      run: |
+        gh release delete v3.5.0 --yes --cleanup-tag 2>$null
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v2.0.0
-        name: "XAPK Player v2.0.0 - حزمة كاملة"
+        tag_name: v3.5.0
+        name: "MAWAQIT TV v3.5.0 for Windows"
         body: |
-          ## XAPK Player - مشغل تطبيقات أندرويد 📱
+          ## 🕌 MAWAQIT TV for Windows
           
-          حزمة كاملة تحتوي على كل شيء - لا يحتاج تثبيت أي شيء!
+          تطبيق مواقيت TV لأجهزة Windows - ملف واحد جاهز للتشغيل!
           
-          ### المحتويات:
-          - ✅ XAPK Player (واجهة التشغيل)
-          - ✅ QEMU (محاكي مدمج)
-          - ✅ Android-x86 (نظام أندرويد)
-          - ✅ ADB (أدوات الاتصال)
+          ### التحميل والتشغيل:
+          1. حمّل ملف `MAWAQIT.exe` من الأسفل
+          2. شغّل الملف مباشرة (لا يحتاج تثبيت!)
+          3. أدخل اسم المسجد أو رابط mawaqit.net
+          4. اضغط **Start TV App**
           
-          ### الاستخدام:
-          1. حمّل `XAPK-Player-Full.zip`
-          2. فك الضغط
-          3. شغّل `XAPK-Player.exe`
-          4. اختر ملف XAPK واضغط تشغيل
-        files: XAPK-Player-Full.zip
+          ### المميزات:
+          - ✅ ملف واحد - كل شيء مدمج بالداخل
+          - ✅ لا يحتاج تثبيت Python أو أي برنامج آخر  
+          - ✅ واجهة مميزة وعصرية
+          - ✅ وضع ملء الشاشة
+          - ✅ يعمل مباشرة بدون إعدادات
+        files: dist/MAWAQIT.exe
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
