@@ -236,7 +236,7 @@ jobs:
 
         Get-ChildItem "package" -Recurse -Include "*.exe","*.dll" | Where-Object { $_.Length -gt 500KB } | ForEach-Object {
           $before = $_.Length/1MB
-          & $upx --best --lzma $_.FullName 2>$null
+          & $upx --best --lzma $_.FullName 2>$null | Out-Null
           $after = (Get-Item $_.FullName).Length/1MB
           Write-Host "  $($_.Name): $([math]::Round($before,1))MB -> $([math]::Round($after,1))MB"
         }
