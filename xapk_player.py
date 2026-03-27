@@ -26,9 +26,15 @@ def get_app_dir():
 # --- All paths relative to EXE location ---
 APP_DIR = get_app_dir()
 QEMU_EXE = os.path.join(APP_DIR, "qemu", "qemu-system-x86_64.exe")
+if not os.path.isfile(QEMU_EXE):
+    QEMU_EXE = os.path.join(APP_DIR, "qemu", "qemu-system-i386.exe")
 QEMU_IMG_EXE = os.path.join(APP_DIR, "qemu", "qemu-img.exe")
+QEMU_BIOS = os.path.join(APP_DIR, "qemu", "share")
 ADB_EXE = os.path.join(APP_DIR, "platform-tools", "adb.exe")
 ANDROID_ISO = os.path.join(APP_DIR, "android", "android-x86.iso")
+ANDROID_KERNEL = os.path.join(APP_DIR, "android", "kernel")
+ANDROID_INITRD = os.path.join(APP_DIR, "android", "initrd.img")
+ANDROID_SYSTEM = os.path.join(APP_DIR, "android", "system.sfs")
 DATA_DIR = os.path.join(APP_DIR, "data")
 DATA_DISK = os.path.join(DATA_DIR, "userdata.qcow2")
 EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "xapk_extract")
@@ -127,10 +133,11 @@ class XAPKPlayer:
 
     def _check_files(self):
         """Check if all required files exist in the app folder"""
+        has_android = os.path.isfile(ANDROID_ISO) or (os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD))
         checks = {
             "QEMU": os.path.isfile(QEMU_EXE),
             "ADB": os.path.isfile(ADB_EXE),
-            "Android": os.path.isfile(ANDROID_ISO),
+            "Android": has_android,
         }
 
         parts = []
@@ -201,8 +208,6 @@ class XAPKPlayer:
             QEMU_EXE,
             "-m", QEMU_RAM,
             "-smp", QEMU_CORES,
-            "-cdrom", ANDROID_ISO,
-            "-boot", "d",
             "-net", "nic,model=virtio",
             "-net", f"user,hostfwd=tcp::{ADB_FWD_PORT}-:5555",
             "-display", "sdl",
@@ -210,6 +215,19 @@ class XAPKPlayer:
             "-usb", "-device", "usb-tablet",
             "-machine", "q35",
         ]
+
+        # Add BIOS path if trimmed QEMU
+        if os.path.isdir(QEMU_BIOS):
+            cmd.extend(["-L", QEMU_BIOS])
+
+        # Boot from extracted files or ISO
+        if os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD):
+            cmd.extend(["-kernel", ANDROID_KERNEL, "-initrd", ANDROID_INITRD])
+            cmd.extend(["-append", "root=/dev/ram0 androidboot.selinux=permissive console=ttyS0 UVESA_MODE=1280x720"])
+            if os.path.isfile(ANDROID_SYSTEM):
+                cmd.extend(["-hdb", ANDROID_SYSTEM])
+        elif os.path.isfile(ANDROID_ISO):
+            cmd.extend(["-cdrom", ANDROID_ISO, "-boot", "d"])
 
         if os.path.isfile(DATA_DISK):
             cmd.extend(["-hda", DATA_DISK])
