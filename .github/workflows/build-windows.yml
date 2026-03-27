@@ -60,15 +60,12 @@ jobs:
         curl -L -o qemu.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
         Expand-Archive qemu.zip -DestinationPath "temp_qemu" -Force
         Remove-Item qemu.zip
-        
         $qemuExe = Get-ChildItem "temp_qemu" -Recurse -Filter "qemu-system-x86_64.exe" | Select-Object -First 1
         $srcDir = $qemuExe.DirectoryName
-        
         mkdir "package/qemu" -ErrorAction SilentlyContinue
         Copy-Item "$srcDir/qemu-system-x86_64.exe" "package/qemu/"
         Copy-Item "$srcDir/qemu-img.exe" "package/qemu/" -ErrorAction SilentlyContinue
         Get-ChildItem "$srcDir" -Filter "*.dll" | Copy-Item -Destination "package/qemu/"
-        
         mkdir "package/qemu/share" -ErrorAction SilentlyContinue
         @("bios-256k.bin","efi-virtio.rom","kvmvapic.bin","vgabios-virtio.bin","vgabios-stdvga.bin","efi-e1000.rom") | ForEach-Object {
           $f = Get-ChildItem "temp_qemu" -Recurse -Filter $_ | Select-Object -First 1
@@ -76,81 +73,73 @@ jobs:
         }
         Remove-Item "temp_qemu" -Recurse -Force
 
-    - name: Download Android-x86 ISO
+    - name: Download Android-x86 ISO (with resume)
+      timeout-minutes: 30
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
         $outFile = "package/android/android-x86.iso"
         
-        # Try multiple reliable mirror sources
-        $mirrors = @(
-          # Tsinghua University (China) - very reliable
-          "https://mirrors.tuna.tsinghua.edu.cn/osdn/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          # USTC University (China) 
-          "https://mirrors.ustc.edu.cn/osdn/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          # Tsinghua SourceForge mirror
-          "https://mirrors.tuna.tsinghua.edu.cn/sourceforge/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          # JAIST (Japan)
-          "https://ftp.jaist.ac.jp/pub/sourceforge/a/an/android-x86/Release%209.0/android-x86_64-9.0-r2.iso",
-          # SourceForge direct (last resort)
-          "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
-        )
+        # Use Android-x86 6.0 (~450MB instead of 921MB for 9.0)
+        $url = "https://downloads.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso"
+        $minSize = 400  # MB - expected ~450MB
         
-        $success = $false
-        foreach ($url in $mirrors) {
-          Write-Host "`nTrying: $url"
+        # Download with resume support - retry up to 10 times
+        $maxRetries = 10
+        for ($i = 1; $i -le $maxRetries; $i++) {
+          Write-Host "Download attempt $i/$maxRetries..."
           
-          # Remove partial file
-          Remove-Item $outFile -ErrorAction SilentlyContinue
+          # -C - means resume from where it left off
+          curl -L -C - --retry 3 --connect-timeout 30 --max-time 300 -o $outFile $url 2>&1
           
-          try {
-            curl -L --retry 1 --connect-timeout 15 --max-time 600 -o $outFile $url 2>&1
-            
-            if (Test-Path $outFile) {
-              $size = (Get-Item $outFile).Length / 1MB
-              Write-Host "Got: $([math]::Round($size, 1)) MB"
-              if ($size -gt 100) {
-                $success = $true
-                Write-Host "SUCCESS!"
-                break
-              }
-            }
-          } catch {
-            Write-Host "Error: $_"
-          }
-          Write-Host "Failed, trying next..."
-        }
-        
-        if (-not $success) {
-          Write-Host "All mirrors failed. Trying PowerShell WebClient..."
-          try {
-            $wc = New-Object System.Net.WebClient
-            $wc.Headers.Add("User-Agent", "Mozilla/5.0")
-            $wc.DownloadFile("https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso", (Resolve-Path "package/android" | Join-Path -ChildPath "android-x86.iso"))
+          if (Test-Path $outFile) {
             $size = (Get-Item $outFile).Length / 1MB
-            if ($size -gt 100) { $success = $true }
-          } catch {
-            Write-Host "WebClient also failed: $_"
+            Write-Host "Current size: $([math]::Round($size, 1)) MB"
+            
+            if ($size -gt $minSize) {
+              Write-Host "Download complete!"
+              break
+            }
           }
+          
+          if ($i -eq $maxRetries) {
+            # If 6.0 fails completely, try 9.0 with resume
+            Write-Host "Trying Android-x86 9.0 as fallback..."
+            $url = "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+            $minSize = 800
+            $maxRetries = 20  # More retries for larger file
+          }
+          
+          Write-Host "Resuming in 5 seconds..."
+          Start-Sleep -Seconds 5
         }
         
-        if (-not $success) { exit 1 }
+        # Final check
+        if (Test-Path $outFile) {
+          $finalSize = (Get-Item $outFile).Length / 1MB
+          Write-Host "Final ISO size: $([math]::Round($finalSize, 1)) MB"
+          if ($finalSize -lt 100) {
+            Write-Host "ERROR: File too small"
+            exit 1
+          }
+        } else {
+          Write-Host "ERROR: No file downloaded"
+          exit 1
+        }
 
     - name: Assemble and Compress
       run: |
         Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
         mkdir "package/data" -ErrorAction SilentlyContinue
         
-        # Show sizes
-        Write-Host "=== Package Contents ==="
-        Get-ChildItem "package" -Recurse | Group-Object Directory | ForEach-Object {
-          $size = ($_.Group | Measure-Object -Property Length -Sum).Sum / 1MB
-          Write-Host "$($_.Name): $([math]::Round($size, 1)) MB"
+        Write-Host "=== Sizes ==="
+        @("qemu","platform-tools","android") | ForEach-Object {
+          $s = (Get-ChildItem "package/$_" -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "${_}: $([math]::Round($s, 1)) MB"
         }
         
-        # Create 7z (best compression)
         7z a -t7z -mx=9 -mfb=64 "MAWAQIT-Player.7z" "./package/*"
         $s = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
-        Write-Host "`nFinal 7z: $([math]::Round($s, 1)) MB"
+        Write-Host "Final 7z: $([math]::Round($s, 1)) MB"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
@@ -172,11 +161,10 @@ jobs:
         name: "MAWAQIT Player v3.5.0"
         body: |
           ## 🕌 MAWAQIT Player
-          
           1. حمّل `MAWAQIT-Player.7z`
           2. فك الضغط بـ 7-Zip
           3. شغّل `MAWAQIT-Player.exe`
-          4. اختر XAPK واضغط تشغيل
+          4. اختر XAPK واضغط 🚀 تشغيل
         files: MAWAQIT-Player.7z
         make_latest: true
       env:
