@@ -84,7 +84,31 @@ jobs:
       run: |
         # Use 32-bit ISO (726 MB vs 921 MB for 64-bit = 200 MB saved)
         Write-Host "Downloading Android-x86 9.0 (32-bit)..."
-        Invoke-WebRequest -Uri "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86-9.0-r2.iso/download" -OutFile "android.iso" -UserAgent "Mozilla/5.0"
+        
+        # Try multiple mirrors (SourceForge has Cloudflare issues)
+        $mirrors = @(
+          "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86-9.0-r2.iso",
+          "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86-9.0-r2.iso/download",
+          "https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download"
+        )
+        
+        $downloaded = $false
+        foreach ($url in $mirrors) {
+          Write-Host "Trying: $url"
+          try {
+            curl.exe -L -o "android.iso" -# --retry 3 --retry-delay 5 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$url"
+            if ((Test-Path "android.iso") -and (Get-Item "android.iso").Length -gt 100MB) {
+              $downloaded = $true
+              Write-Host "Download OK!"
+              break
+            }
+            Remove-Item "android.iso" -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "Mirror failed: $_"
+          }
+        }
+        
+        if (-not $downloaded) { throw "All mirrors failed!" }
         
         $isoSize = (Get-Item "android.iso").Length/1MB
         Write-Host "ISO size: $([math]::Round($isoSize,1)) MB"
