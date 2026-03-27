@@ -48,7 +48,7 @@ jobs:
     - name: Build XAPK Player EXE
       run: pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
 
-    - name: Download ADB (minimal)
+    - name: Download ADB
       run: |
         curl -L -o pt.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
         Expand-Archive pt.zip -DestinationPath "package" -Force
@@ -73,56 +73,62 @@ jobs:
         }
         Remove-Item "temp_qemu" -Recurse -Force
 
-    - name: Download Android-x86 ISO (with resume)
-      timeout-minutes: 30
+    - name: Install aria2c
+      run: choco install aria2 -y --no-progress
+
+    - name: Download Android-x86 ISO
+      timeout-minutes: 25
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
         $outFile = "package/android/android-x86.iso"
         
-        # Use Android-x86 6.0 (~450MB instead of 921MB for 9.0)
-        $url = "https://downloads.sourceforge.net/project/android-x86/Release%206.0/android-x86_64-6.0-r3.iso"
-        $minSize = 400  # MB - expected ~450MB
+        # First resolve the redirect to get real mirror URL
+        Write-Host "Resolving SourceForge redirect..."
+        $realUrl = curl -Ls -o /dev/null -w "%{url_effective}" "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso" 2>$null
+        Write-Host "Resolved URL: $realUrl"
         
-        # Download with resume support - retry up to 10 times
-        $maxRetries = 10
-        for ($i = 1; $i -le $maxRetries; $i++) {
-          Write-Host "Download attempt $i/$maxRetries..."
-          
-          # -C - means resume from where it left off
-          curl -L -C - --retry 3 --connect-timeout 30 --max-time 300 -o $outFile $url 2>&1
-          
-          if (Test-Path $outFile) {
-            $size = (Get-Item $outFile).Length / 1MB
-            Write-Host "Current size: $([math]::Round($size, 1)) MB"
+        # Use aria2c with multiple connections for fast, reliable download
+        Write-Host "Downloading with aria2c (16 connections)..."
+        aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=10 --retry-wait=5 --timeout=60 --connect-timeout=30 --file-allocation=none --console-log-level=notice -d "package/android" -o "android-x86.iso" "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
+        
+        if (Test-Path $outFile) {
+          $size = (Get-Item $outFile).Length / 1MB
+          Write-Host "ISO size: $([math]::Round($size, 1)) MB"
+          if ($size -lt 800) {
+            Write-Host "Too small, trying BITS transfer..."
+            Remove-Item $outFile -ErrorAction SilentlyContinue
             
-            if ($size -gt $minSize) {
-              Write-Host "Download complete!"
-              break
+            # Fallback: BITS Transfer (built into Windows, handles large files well)
+            try {
+              Start-BitsTransfer -Source "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso" -Destination $outFile -Description "Downloading Android-x86"
+            } catch {
+              Write-Host "BITS failed: $_"
+            }
+            
+            if (Test-Path $outFile) {
+              $size = (Get-Item $outFile).Length / 1MB
+              Write-Host "BITS result: $([math]::Round($size, 1)) MB"
             }
           }
-          
-          if ($i -eq $maxRetries) {
-            # If 6.0 fails completely, try 9.0 with resume
-            Write-Host "Trying Android-x86 9.0 as fallback..."
-            $url = "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
-            $minSize = 800
-            $maxRetries = 20  # More retries for larger file
+        } else {
+          Write-Host "aria2c produced no file, trying BITS..."
+          try {
+            Start-BitsTransfer -Source "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso" -Destination $outFile -Description "Downloading Android-x86"
+          } catch {
+            Write-Host "BITS also failed: $_"
           }
-          
-          Write-Host "Resuming in 5 seconds..."
-          Start-Sleep -Seconds 5
         }
         
         # Final check
         if (Test-Path $outFile) {
           $finalSize = (Get-Item $outFile).Length / 1MB
-          Write-Host "Final ISO size: $([math]::Round($finalSize, 1)) MB"
-          if ($finalSize -lt 100) {
+          Write-Host "Final: $([math]::Round($finalSize, 1)) MB"
+          if ($finalSize -lt 400) {
             Write-Host "ERROR: File too small"
             exit 1
           }
         } else {
-          Write-Host "ERROR: No file downloaded"
+          Write-Host "ERROR: Download completely failed"
           exit 1
         }
 
