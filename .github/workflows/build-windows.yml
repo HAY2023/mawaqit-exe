@@ -41,85 +41,96 @@ jobs:
         # Extract ISO
         7z x android.iso -oiso_extract -y
         rm android.iso
-        
         ls -la iso_extract/
         
-        # Find system.sfs
-        SYSTEM_SFS=$(find iso_extract -name "system.sfs" -o -name "system.img" | head -1)
-        echo "Found: $SYSTEM_SFS"
-        echo "Original size: $(du -h $SYSTEM_SFS | cut -f1)"
+        # system.sfs is squashfs containing system.img (ext4)
+        SYSTEM_SFS=$(find iso_extract -name "system.sfs" | head -1)
+        echo "Found: $SYSTEM_SFS ($(du -h $SYSTEM_SFS | cut -f1))"
         
-        # Extract squashfs
-        sudo unsquashfs -d system_root "$SYSTEM_SFS"
+        # Step 1: Extract system.img from system.sfs
+        sudo unsquashfs -d sfs_root "$SYSTEM_SFS"
+        ls -lh sfs_root/
         
-        echo "=== Before trimming ==="
-        du -sh system_root/
-        
-        # === REMOVE BLOAT APPS (not needed for MAWAQIT) ===
-        echo "Removing unnecessary apps..."
-        
-        # Remove from /system/app/
-        for app in Browser2 Calendar Camera2 Calculator Clock DeskClock \
-                   Email ExactCalculator Gallery2 HTMLViewer Music \
-                   QuickSearchBox SoundRecorder LatinIME OpenWnn \
-                   PicoTts BasicDreams LiveWallpapers \
-                   LiveWallpapersPicker MagicSmokeWallpapers \
-                   VisualizationWallpapers WallpaperPicker \
-                   PhotoTable Provision; do
-          rm -rf system_root/app/${app}* 2>/dev/null && echo "  Removed app/$app"
-        done
-        
-        # Remove from /system/priv-app/
-        for app in Browser2 Calendar Camera2 Contacts Dialer \
-                   Email Gallery2 Music Telecomm TeleService \
-                   CallLogBackup ManagedProvisioning \
-                   MusicFX Tag CellBroadcastReceiver; do
-          rm -rf system_root/priv-app/${app}* 2>/dev/null && echo "  Removed priv-app/$app"
-        done
-        
-        # Remove media bloat
-        rm -rf system_root/media/wallpaper* 2>/dev/null
-        rm -rf system_root/media/audio/ringtones/* 2>/dev/null
-        rm -rf system_root/media/audio/notifications/* 2>/dev/null
-        rm -rf system_root/media/audio/alarms/* 2>/dev/null
-        rm -rf system_root/media/bootanimation.zip 2>/dev/null
-        echo "  Removed media bloat"
-        
-        # Remove unnecessary fonts (keep Roboto + Noto for Arabic)
-        find system_root/fonts/ -name "*.ttf" \
-          ! -name "Roboto*" \
-          ! -name "NotoSans*" \
-          ! -name "NotoNaskh*" \
-          ! -name "NotoColorEmoji*" \
-          ! -name "DroidSans*" \
-          -delete 2>/dev/null
-        echo "  Trimmed fonts"
-        
-        # Remove test/sample data
-        rm -rf system_root/xbin/* 2>/dev/null
-        rm -rf system_root/usr/share/bmd 2>/dev/null
-        
-        echo "=== After trimming ==="
-        du -sh system_root/
-        
-        # === REPACK with XZ compression (much better than gzip) ===
-        echo "Repacking with XZ compression (this takes a while)..."
-        sudo mksquashfs system_root system_trimmed.sfs \
-          -comp xz \
-          -Xbcj x86 \
-          -b 1048576 \
-          -no-xattrs \
-          -no-exports
-        
-        echo "Original system: $(du -h $SYSTEM_SFS | cut -f1)"
-        echo "Trimmed system:  $(du -h system_trimmed.sfs | cut -f1)"
-        
-        # Prepare output: kernel + initrd + trimmed system
-        mkdir android_files
-        find iso_extract -name "kernel" | head -1 | xargs -I{} cp {} android_files/
-        find iso_extract -name "initrd.img" | head -1 | xargs -I{} cp {} android_files/
-        find iso_extract -name "ramdisk.img" | head -1 | xargs -I{} cp {} android_files/ 2>/dev/null
-        cp system_trimmed.sfs android_files/system.sfs
+        # Step 2: Mount the ext4 system.img
+        SYSTEM_IMG=$(find sfs_root -name "system.img" | head -1)
+        if [ -z "$SYSTEM_IMG" ]; then
+          echo "No system.img found, using system.sfs directly"
+          # Maybe system.sfs IS the filesystem directly
+          mkdir -p android_files
+          find iso_extract -name "kernel" | head -1 | xargs -I{} cp {} android_files/
+          find iso_extract -name "initrd.img" | head -1 | xargs -I{} cp {} android_files/
+          find iso_extract -name "ramdisk.img" | head -1 | xargs -I{} cp {} android_files/ 2>/dev/null
+          # Just recompress system.sfs with xz
+          sudo mksquashfs sfs_root system_repack.sfs -comp xz -Xbcj x86 -b 1048576 -no-xattrs
+          cp system_repack.sfs android_files/system.sfs
+        else
+          echo "Found: $SYSTEM_IMG ($(du -h $SYSTEM_IMG | cut -f1))"
+          
+          # Mount ext4 image
+          sudo mkdir -p /mnt/android
+          sudo mount -o loop "$SYSTEM_IMG" /mnt/android
+          echo "Mounted! Contents:"
+          ls /mnt/android/ | head -20
+          
+          echo "=== Before trimming ==="
+          df -h /mnt/android
+          
+          # === REMOVE BLOAT (not needed for MAWAQIT) ===
+          echo "Removing bloat apps..."
+          for app in Browser2 Calendar Camera2 Calculator Clock DeskClock \
+                     Email ExactCalculator Gallery2 HTMLViewer Music \
+                     QuickSearchBox SoundRecorder LatinIME OpenWnn \
+                     PicoTts BasicDreams LiveWallpapers \
+                     LiveWallpapersPicker MagicSmokeWallpapers \
+                     VisualizationWallpapers WallpaperPicker \
+                     PhotoTable Provision; do
+            sudo rm -rf /mnt/android/app/${app}* 2>/dev/null && echo "  - app/$app"
+          done
+          
+          for app in Browser2 Calendar Camera2 Contacts Dialer \
+                     Email Gallery2 Music Telecomm TeleService \
+                     CallLogBackup ManagedProvisioning \
+                     MusicFX Tag CellBroadcastReceiver; do
+            sudo rm -rf /mnt/android/priv-app/${app}* 2>/dev/null && echo "  - priv-app/$app"
+          done
+          
+          # Remove media
+          sudo rm -rf /mnt/android/media/wallpaper* 2>/dev/null
+          sudo rm -rf /mnt/android/media/audio/ringtones/* 2>/dev/null
+          sudo rm -rf /mnt/android/media/audio/notifications/* 2>/dev/null
+          sudo rm -rf /mnt/android/media/audio/alarms/* 2>/dev/null
+          sudo rm -rf /mnt/android/media/bootanimation.zip 2>/dev/null
+          echo "  - media bloat removed"
+          
+          # Trim fonts (keep Roboto + Arabic)
+          sudo find /mnt/android/fonts/ -name "*.ttf" \
+            ! -name "Roboto*" ! -name "NotoSans*" \
+            ! -name "NotoNaskh*" ! -name "NotoColorEmoji*" \
+            ! -name "DroidSans*" -delete 2>/dev/null
+          echo "  - fonts trimmed"
+          
+          echo "=== After trimming ==="
+          df -h /mnt/android
+          
+          # Step 3: Copy trimmed filesystem and create new squashfs
+          sudo mkdir -p /tmp/trimmed_sys
+          sudo cp -a /mnt/android/* /tmp/trimmed_sys/
+          sudo umount /mnt/android
+          
+          echo "Repacking with XZ compression..."
+          sudo mksquashfs /tmp/trimmed_sys system_trimmed.sfs \
+            -comp xz -Xbcj x86 -b 1048576 -no-xattrs -no-exports
+          
+          echo "Original system.sfs: $(du -h $SYSTEM_SFS | cut -f1)"
+          echo "Trimmed system.sfs:  $(du -h system_trimmed.sfs | cut -f1)"
+          
+          # Prepare output
+          mkdir -p android_files
+          find iso_extract -name "kernel" | head -1 | xargs -I{} cp {} android_files/
+          find iso_extract -name "initrd.img" | head -1 | xargs -I{} cp {} android_files/
+          find iso_extract -name "ramdisk.img" | head -1 | xargs -I{} cp {} android_files/ 2>/dev/null
+          cp system_trimmed.sfs android_files/system.sfs
+        fi
         
         echo "=== Final android_files ==="
         ls -lh android_files/
