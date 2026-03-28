@@ -1,4 +1,4 @@
-name: Build MAWAQIT XAPK Player
+name: Build MAWAQIT Player (Lite EXE)
 
 on:
   push:
@@ -45,97 +45,28 @@ jobs:
         img.save('app.ico', format='ICO', sizes=[(256,256),(64,64),(32,32),(16,16)])
         "
 
-    - name: Build XAPK Player EXE
+    - name: Build Lite EXE
       run: pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
 
-    - name: Download ADB (minimal)
+    - name: Package
       run: |
-        curl -L -o pt.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
-        Expand-Archive pt.zip -DestinationPath "package" -Force
-        Remove-Item pt.zip
-        Get-ChildItem "package/platform-tools" -Exclude "adb.exe","AdbWinApi.dll","AdbWinUsbApi.dll" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    - name: Download and Trim QEMU
-      run: |
-        curl -L -o qemu.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
-        Expand-Archive qemu.zip -DestinationPath "temp_qemu" -Force
-        Remove-Item qemu.zip
-        $qemuExe = Get-ChildItem "temp_qemu" -Recurse -Filter "qemu-system-x86_64.exe" | Select-Object -First 1
-        $srcDir = $qemuExe.DirectoryName
-        mkdir "package/qemu" -ErrorAction SilentlyContinue
-        Copy-Item "$srcDir/qemu-system-x86_64.exe" "package/qemu/"
-        Copy-Item "$srcDir/qemu-system-i386.exe" "package/qemu/" -ErrorAction SilentlyContinue
-        Copy-Item "$srcDir/qemu-img.exe" "package/qemu/" -ErrorAction SilentlyContinue
-        Get-ChildItem "$srcDir" -Filter "*.dll" | Copy-Item -Destination "package/qemu/"
-        mkdir "package/qemu/share" -ErrorAction SilentlyContinue
-        @("bios-256k.bin", "vgabios-stdvga.bin", "vgabios.bin", "kvmvapic.bin", "efi-virtio.rom") | ForEach-Object {
-          $f = Get-ChildItem "temp_qemu" -Recurse -Filter $_ | Select-Object -First 1
-          if ($f) { Copy-Item $f.FullName "package/qemu/share/" }
-        }
-        Remove-Item "temp_qemu" -Recurse -Force
-
-    - name: Download MAWAQIT Custom Lite Android
-      run: |
-        mkdir "package/android" -ErrorAction SilentlyContinue
+        mkdir "release" -ErrorAction SilentlyContinue
+        Copy-Item "dist/MAWAQIT-Player.exe" "release/MAWAQIT-Player.exe"
         
-        # رابط النسخة النحيفة المجهزة مسبقاً (kernel + initrd.img + system.sfs)
-        $url = "https://github.com/HAY2023/mawaqit-exe/releases/download/v0.1-lite/android-lite.zip"
-        
-        Write-Host "Downloading Custom Lite Android from: $url"
-        $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/octet-stream" }
-        Invoke-WebRequest -Uri $url -OutFile "android-lite.zip" -UseBasicParsing -Headers $headers
-        
-        Expand-Archive "android-lite.zip" -DestinationPath "package/android" -Force
-        Remove-Item "android-lite.zip"
-        
-        # التحقق من وجود الملفات الأساسية
-        $hasKernel = Test-Path "package/android/kernel"
-        $hasSystem = (Test-Path "package/android/system.sfs") -or (Test-Path "package/android/system.img")
-        if ($hasKernel -and $hasSystem) {
-          Write-Host "✅ Lite Android files OK!"
-          Get-ChildItem "package/android" | ForEach-Object { Write-Host "  $($_.Name) - $([math]::Round($_.Length/1MB, 1)) MB" }
-        } else {
-          Write-Host "❌ Missing essential Android files!"
-          Get-ChildItem "package/android"
-          exit 1
-        }
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Download and Run UPX (Size Stripping)
-      run: |
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
-        Expand-Archive upx.zip -DestinationPath "upx_tool" -Force
-        $upxExe = Get-ChildItem "upx_tool" -Recurse -Filter "upx.exe" | Select-Object -First 1
-        
-        Write-Host "Starting UPX ultra-compression on QEMU binaries..."
-        $files = Get-ChildItem -Path "package/qemu" -Include *.dll, *.exe -Recurse
-        foreach ($file in $files) {
-            Start-Process -FilePath $upxExe.FullName -ArgumentList "-9 `"$($file.FullName)`"" -Wait -NoNewWindow -PassThru
-        }
-        exit 0
-
-    - name: Assemble and Ultra Compress
-      run: |
-        Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
-        mkdir "package/data" -ErrorAction SilentlyContinue
-        
-        7z a -t7z -mx=9 -md=64m -mfb=273 -ms=on "MAWAQIT-Player.7z" "./package/*"
-        
-        $s = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
-        Write-Host "FINAL 7z Size: $([math]::Round($s, 1)) MB"
+        $size = (Get-Item "release/MAWAQIT-Player.exe").Length / 1MB
+        Write-Host "EXE Size: $([math]::Round($size, 1)) MB"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: MAWAQIT-Player
-        path: MAWAQIT-Player.7z
+        path: release/MAWAQIT-Player.exe
         retention-days: 30
 
     - name: Delete old release
       continue-on-error: true
       run: |
-        gh release delete v3.5.0 --yes --cleanup-tag 2>$null
+        gh release delete v4.0.0 --yes --cleanup-tag 2>$null
         exit 0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,20 +74,20 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v3.5.0
-        name: "MAWAQIT Player v3.5.0"
+        tag_name: v4.0.0
+        name: "MAWAQIT Player v4.0.0 - Lite Edition"
         body: |
-          ## 🕌 MAWAQIT Player - كل شيء مدمج بحجم خفيف
+          ## 🕌 MAWAQIT Player v4.0 - النسخة الخفيفة
           
-          ✅ **حجم صغير:** أقل من 150 MB!
-          ✅ **يعمل أوفلاين:** أندرويد مدمج ولا تحتاج انترنت.
+          ✅ **حجم صغير جداً:** ~10 MB فقط!
+          ✅ **يعمل فوراً بالإنترنت**
+          ✅ **أوفلاين اختياري:** حمّل الملفات من داخل التطبيق
           
           ### الاستخدام:
-          1. حمّل MAWAQIT-Player.7z
-          2. فك الضغط ببرنامج 7-Zip
-          3. شغّل MAWAQIT-Player.exe
-          4. اختر تطبيق XAPK واضغط تشغيل
-        files: MAWAQIT-Player.7z
+          1. حمّل `MAWAQIT-Player.exe`
+          2. شغّله → يعمل فوراً بالإنترنت
+          3. لتشغيله بدون إنترنت → اضغط "📥 تحميل ملفات الأوفلاين" داخل التطبيق
+        files: release/MAWAQIT-Player.exe
         make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

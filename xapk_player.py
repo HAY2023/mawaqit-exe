@@ -1,7 +1,7 @@
 """
-XAPK Player - Self-contained Android Emulator
-All files (QEMU, Android-x86, ADB) are bundled in the same folder.
-No internet download needed - just run the EXE.
+XAPK Player - Smart Android Emulator
+Online mode: works immediately with internet
+Offline mode: downloads heavy files from MAWAQIT Files Server
 """
 import os
 import sys
@@ -16,6 +16,10 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 
+# === Server API URL ===
+FILES_API = "https://umyqxjwitaychkwnrxgy.supabase.co/functions/v1/api-files"
+
+
 def get_app_dir():
     """Get the directory where the EXE is located"""
     if getattr(sys, 'frozen', False):
@@ -25,17 +29,20 @@ def get_app_dir():
 
 # --- All paths relative to EXE location ---
 APP_DIR = get_app_dir()
-QEMU_EXE = os.path.join(APP_DIR, "qemu", "qemu-system-x86_64.exe")
+QEMU_DIR = os.path.join(APP_DIR, "qemu")
+QEMU_EXE = os.path.join(QEMU_DIR, "qemu-system-x86_64.exe")
 if not os.path.isfile(QEMU_EXE):
-    QEMU_EXE = os.path.join(APP_DIR, "qemu", "qemu-system-i386.exe")
-QEMU_IMG_EXE = os.path.join(APP_DIR, "qemu", "qemu-img.exe")
-QEMU_BIOS = os.path.join(APP_DIR, "qemu", "share")
-ADB_EXE = os.path.join(APP_DIR, "platform-tools", "adb.exe")
-ANDROID_ISO = os.path.join(APP_DIR, "android", "android-x86.iso")
-ANDROID_KERNEL = os.path.join(APP_DIR, "android", "kernel")
-ANDROID_INITRD = os.path.join(APP_DIR, "android", "initrd.img")
-ANDROID_SYSTEM_IMG = os.path.join(APP_DIR, "android", "system.img")
-ANDROID_SYSTEM_SFS = os.path.join(APP_DIR, "android", "system.sfs")
+    QEMU_EXE = os.path.join(QEMU_DIR, "qemu-system-i386.exe")
+QEMU_IMG_EXE = os.path.join(QEMU_DIR, "qemu-img.exe")
+QEMU_BIOS = os.path.join(QEMU_DIR, "share")
+ADB_DIR = os.path.join(APP_DIR, "platform-tools")
+ADB_EXE = os.path.join(ADB_DIR, "adb.exe")
+ANDROID_DIR = os.path.join(APP_DIR, "android")
+ANDROID_ISO = os.path.join(ANDROID_DIR, "android-x86.iso")
+ANDROID_KERNEL = os.path.join(ANDROID_DIR, "kernel")
+ANDROID_INITRD = os.path.join(ANDROID_DIR, "initrd.img")
+ANDROID_SYSTEM_IMG = os.path.join(ANDROID_DIR, "system.img")
+ANDROID_SYSTEM_SFS = os.path.join(ANDROID_DIR, "system.sfs")
 
 DATA_DIR = os.path.join(APP_DIR, "data")
 DATA_DISK = os.path.join(DATA_DIR, "userdata.qcow2")
@@ -46,18 +53,26 @@ QEMU_RAM = "2048"
 QEMU_CORES = "2"
 ADB_FWD_PORT = "5556"
 
+# Map server file names to local extraction directories
+FILE_EXTRACT_MAP = {
+    "qemu.zip": QEMU_DIR,
+    "android-lite.zip": ANDROID_DIR,
+    "adb.zip": ADB_DIR,
+}
+
 
 class XAPKPlayer:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("XAPK Player")
-        self.root.geometry("700x500")
+        self.root.title("MAWAQIT Player")
+        self.root.geometry("700x520")
         self.root.configure(bg="#0d1117")
         self.root.resizable(False, False)
 
         self.xapk_path = None
         self.manifest = None
         self.qemu_proc = None
+        self.downloading = False
 
         self._build_ui()
         self.root.after(300, self._check_files)
@@ -65,12 +80,12 @@ class XAPKPlayer:
     def _build_ui(self):
         # Title
         tk.Label(
-            self.root, text="▶ XAPK Player", font=("Segoe UI", 26, "bold"),
+            self.root, text="🕌 MAWAQIT Player", font=("Segoe UI", 26, "bold"),
             fg="#58a6ff", bg="#0d1117"
         ).pack(pady=(20, 0))
 
         tk.Label(
-            self.root, text="مشغل تطبيقات أندرويد - كل شيء مدمج",
+            self.root, text="مشغل أوقات الصلاة - يعمل أونلاين وأوفلاين",
             font=("Segoe UI", 11), fg="#8b949e", bg="#0d1117"
         ).pack(pady=(0, 10))
 
@@ -104,7 +119,7 @@ class XAPKPlayer:
 
         # Buttons
         btn_frame = tk.Frame(self.root, bg="#0d1117")
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=10)
 
         self.run_btn = tk.Button(
             btn_frame, text="🚀 تشغيل", font=("Segoe UI", 15, "bold"),
@@ -122,23 +137,52 @@ class XAPKPlayer:
         )
         self.stop_btn.pack(side="left", padx=8)
 
+        # Download button (for offline files)
+        self.dl_btn = tk.Button(
+            self.root, text="📥 تحميل ملفات الأوفلاين من السيرفر",
+            font=("Segoe UI", 12, "bold"),
+            fg="white", bg="#5B2D8E", activebackground="#7B3DBE",
+            border=0, padx=30, pady=10, cursor="hand2",
+            command=self._download_from_server
+        )
+
         # Log
         self.log = tk.Label(
             self.root, text="", font=("Segoe UI", 10),
             fg="#3fb950", bg="#0d1117", wraplength=640, justify="center"
         )
-        self.log.pack(pady=10)
+        self.log.pack(pady=8)
 
-        # Progress
-        self.progress = ttk.Progressbar(self.root, mode='indeterminate', length=500)
+        # Progress bar
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure("purple.Horizontal.TProgressbar",
+                        troughcolor='#161b22', background='#5B2D8E')
+
+        self.progress = ttk.Progressbar(
+            self.root, mode='determinate', length=500,
+            style="purple.Horizontal.TProgressbar"
+        )
         self.progress.pack(pady=5)
+
+        self.progress_label = tk.Label(
+            self.root, text="", font=("Segoe UI", 9),
+            fg="#8b949e", bg="#0d1117"
+        )
+        self.progress_label.pack()
 
     def _check_files(self):
         """Check if all required files exist in the app folder"""
-        has_android = os.path.isfile(ANDROID_ISO) or (os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD))
+        has_qemu = os.path.isfile(QEMU_EXE)
+        has_adb = os.path.isfile(ADB_EXE)
+        has_android = os.path.isfile(ANDROID_ISO) or (
+            os.path.isfile(ANDROID_KERNEL) and
+            (os.path.isfile(ANDROID_SYSTEM_SFS) or os.path.isfile(ANDROID_SYSTEM_IMG))
+        )
+
         checks = {
-            "QEMU": os.path.isfile(QEMU_EXE),
-            "ADB": os.path.isfile(ADB_EXE),
+            "QEMU": has_qemu,
+            "ADB": has_adb,
             "Android": has_android,
         }
 
@@ -149,66 +193,136 @@ class XAPKPlayer:
         self.files_status.config(text="  |  ".join(parts))
 
         all_ok = all(checks.values())
+        missing = [k for k, v in checks.items() if not v]
+
         if not all_ok:
-            if not has_android and os.path.isfile(QEMU_EXE):
-                self._msg("📥 نظام أندرويد غير موجود - اضغط تحميل", "#e3b341")
-                self.run_btn.config(text="📥 تحميل أندرويد", state="normal", command=self._download_android)
-            else:
-                self._msg("⚠️ ملفات ناقصة! تأكد من وجود مجلدات qemu و platform-tools و android", "#f85149")
+            self._msg(f"📥 ملفات ناقصة: {', '.join(missing)} - اضغط تحميل", "#e3b341")
+            self.dl_btn.pack(pady=5)
+        else:
+            self._msg("✅ كل الملفات جاهزة - اختر XAPK وشغّل!", "#3fb950")
+            self.dl_btn.pack_forget()
 
         return all_ok
 
-    def _download_android(self):
-        """Download Android-x86 ISO on first run"""
-        self.run_btn.config(state="disabled", text="⏳ جاري التحميل...")
-        self.progress.start(10)
+    def _download_from_server(self):
+        """Download all missing files from MAWAQIT Files Server"""
+        if self.downloading:
+            return
+        self.downloading = True
+        self.dl_btn.config(state="disabled", text="⏳ جاري التحميل...")
+        self.run_btn.config(state="disabled")
 
-        def download():
+        def download_work():
             import urllib.request
-            url = "https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"
-            os.makedirs(os.path.dirname(ANDROID_ISO), exist_ok=True)
-            
+
             try:
-                self._msg("📥 جاري تحميل نظام أندرويد (~900 MB)...")
-                
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                response = urllib.request.urlopen(req, timeout=600)
-                total = int(response.headers.get('Content-Length', 0))
-                downloaded = 0
-                
-                with open(ANDROID_ISO, 'wb') as f:
-                    while True:
-                        chunk = response.read(1024 * 1024)  # 1MB chunks
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        pct = int(downloaded * 100 / total) if total else 0
-                        mb = downloaded / (1024 * 1024)
-                        self._msg(f"📥 تحميل: {mb:.0f} MB / {total/1024/1024:.0f} MB ({pct}%)")
-                
-                self._msg("✅ تم تحميل أندرويد بنجاح!")
-                self.root.after(0, self._after_download)
-                
+                # Step 1: Get file list from API
+                self._msg("📡 الاتصال بسيرفر MAWAQIT...")
+                req = urllib.request.Request(FILES_API, headers={"User-Agent": "MAWAQIT-Player/3.5"})
+                response = urllib.request.urlopen(req, timeout=30)
+                data = json.loads(response.read().decode('utf-8'))
+
+                files = data.get("files", [])
+                if not files:
+                    self._msg("❌ لا توجد ملفات على السيرفر!", "#f85149")
+                    return
+
+                self._msg(f"📋 وجدت {len(files)} ملفات على السيرفر")
+
+                # Step 2: Download each missing file
+                for i, file_info in enumerate(files):
+                    fname = file_info.get("name", "")
+                    furl = file_info.get("url") or file_info.get("file_url", "")
+                    fsize = file_info.get("size") or file_info.get("file_size", 0)
+                    extract_dir = FILE_EXTRACT_MAP.get(fname)
+
+                    if not furl or not extract_dir:
+                        continue
+
+                    # Skip if already exists
+                    if fname == "qemu.zip" and os.path.isfile(QEMU_EXE):
+                        continue
+                    if fname == "android-lite.zip" and (
+                        os.path.isfile(ANDROID_KERNEL) or os.path.isfile(ANDROID_ISO)
+                    ):
+                        continue
+                    if fname == "adb.zip" and os.path.isfile(ADB_EXE):
+                        continue
+
+                    size_mb = fsize / (1024 * 1024) if fsize else 0
+                    self._msg(f"📥 [{i+1}/{len(files)}] تحميل {fname} ({size_mb:.0f} MB)...")
+
+                    # Download file
+                    zip_path = os.path.join(APP_DIR, fname)
+                    req = urllib.request.Request(furl, headers={"User-Agent": "MAWAQIT-Player/3.5"})
+                    resp = urllib.request.urlopen(req, timeout=600)
+                    total = int(resp.headers.get('Content-Length', fsize or 0))
+                    downloaded = 0
+
+                    with open(zip_path, 'wb') as f:
+                        while True:
+                            chunk = resp.read(1024 * 512)  # 512KB chunks
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = int(downloaded * 100 / total)
+                                mb_done = downloaded / (1024 * 1024)
+                                mb_total = total / (1024 * 1024)
+                                self.root.after(0, lambda p=pct: self.progress.configure(value=p))
+                                self.root.after(0, lambda m=mb_done, t=mb_total, p=pct:
+                                    self.progress_label.configure(
+                                        text=f"{m:.1f} / {t:.1f} MB ({p}%)"
+                                    ))
+
+                    # Extract zip
+                    self._msg(f"📦 فك ضغط {fname}...")
+                    os.makedirs(extract_dir, exist_ok=True)
+                    try:
+                        with zipfile.ZipFile(zip_path, 'r') as z:
+                            z.extractall(extract_dir)
+                    except Exception as e:
+                        self._msg(f"⚠️ خطأ فك ضغط {fname}: {e}", "#e3b341")
+
+                    # Clean up zip
+                    try:
+                        os.remove(zip_path)
+                    except:
+                        pass
+
+                    self.root.after(0, lambda: self.progress.configure(value=0))
+                    self.root.after(0, lambda: self.progress_label.configure(text=""))
+
+                # Re-check files
+                self._msg("✅ تم تحميل جميع الملفات بنجاح!", "#3fb950")
+                self.root.after(0, self._after_download_complete)
+
             except Exception as e:
-                self._msg(f"❌ فشل التحميل: {e}", "#f85149")
-                if os.path.exists(ANDROID_ISO):
-                    os.remove(ANDROID_ISO)
+                self._msg(f"❌ خطأ: {e}", "#f85149")
             finally:
-                self.progress.stop()
+                self.downloading = False
+                self.root.after(0, lambda: self.dl_btn.config(
+                    state="normal", text="📥 تحميل ملفات الأوفلاين من السيرفر"
+                ))
 
-        threading.Thread(target=download, daemon=True).start()
+        threading.Thread(target=download_work, daemon=True).start()
 
-    def _after_download(self):
-        """Called after Android download completes"""
-        self.run_btn.config(text="🚀 تشغيل", command=self._start)
+    def _after_download_complete(self):
+        """Called after all downloads complete"""
+        # Re-find QEMU exe
+        global QEMU_EXE
+        qemu64 = os.path.join(QEMU_DIR, "qemu-system-x86_64.exe")
+        qemu32 = os.path.join(QEMU_DIR, "qemu-system-i386.exe")
+        if os.path.isfile(qemu64):
+            QEMU_EXE = qemu64
+        elif os.path.isfile(qemu32):
+            QEMU_EXE = qemu32
+
         self._check_files()
-        if os.path.isfile(ANDROID_ISO):
-            self.run_btn.config(state="normal")
 
     def _msg(self, text, color="#3fb950"):
-        self.log.config(text=text, fg=color)
-        self.root.update_idletasks()
+        self.root.after(0, lambda: self.log.config(text=text, fg=color))
 
     def _pick_file(self, event=None):
         path = filedialog.askopenfilename(
@@ -267,36 +381,26 @@ class XAPKPlayer:
             "-display", "sdl",
             "-device", "virtio-vga",
             "-usb", "-device", "usb-tablet",
-            "-machine", "q35",
         ]
 
         if os.path.isdir(QEMU_BIOS):
             cmd.extend(["-L", QEMU_BIOS])
 
         if os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD):
-            # Boot from extracted kernel + initrd
             cmd.extend(["-kernel", ANDROID_KERNEL, "-initrd", ANDROID_INITRD])
             cmd.extend(["-append", "root=/dev/ram0 androidboot.selinux=permissive SRC=/"])
-            
-            # Attach system read-only
+
             if os.path.isfile(ANDROID_SYSTEM_IMG):
                 cmd.extend(["-drive", f"file={ANDROID_SYSTEM_IMG},format=raw,readonly=on"])
             elif os.path.isfile(ANDROID_SYSTEM_SFS):
                 cmd.extend(["-drive", f"file={ANDROID_SYSTEM_SFS},format=raw,readonly=on"])
         elif os.path.isfile(ANDROID_ISO):
-            # Boot from full ISO
             cmd.extend(["-cdrom", ANDROID_ISO, "-boot", "d"])
 
         if os.path.isfile(DATA_DISK):
             cmd.extend(["-hdb", DATA_DISK])
 
-        # Remove our old -machine q35 without accel
-        if "-machine" in cmd:
-            idx = cmd.index("-machine")
-            cmd.pop(idx)
-            cmd.pop(idx)
-            
-        # Multiple -accel options allows QEMU to try them in order and fallback to tcg
+        # Acceleration with fallback
         cmd.extend([
             "-machine", "q35",
             "-accel", "whpx,kernel-irqchip=off",
@@ -304,8 +408,10 @@ class XAPKPlayer:
         ])
 
         try:
-            # We add creationflags=subprocess.CREATE_NO_WINDOW so it doesn't pop up a console
-            self.qemu_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.qemu_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
         except Exception as e:
             self._msg(f"❌ خطأ QEMU: {e}", "#f85149")
             return
@@ -377,18 +483,19 @@ class XAPKPlayer:
         if "Success" in r.stdout:
             self._msg("✅ تم التثبيت!")
 
-            # Copy OBB
             if self.manifest:
                 pkg = self.manifest.get('package_name', '')
                 if pkg and os.path.exists(EXTRACT_DIR):
-                    for root, _, files in os.walk(EXTRACT_DIR):
-                        for f in files:
+                    for root_dir, _, files_list in os.walk(EXTRACT_DIR):
+                        for f in files_list:
                             if f.endswith('.obb'):
                                 rem = f"/sdcard/Android/obb/{pkg}/"
-                                subprocess.run([ADB_EXE, "-s", target, "shell", "mkdir", "-p", rem], capture_output=True, timeout=5)
-                                subprocess.run([ADB_EXE, "-s", target, "push", os.path.join(root, f), rem + f], capture_output=True, timeout=300)
+                                subprocess.run([ADB_EXE, "-s", target, "shell", "mkdir", "-p", rem],
+                                               capture_output=True, timeout=5)
+                                subprocess.run([ADB_EXE, "-s", target, "push",
+                                                os.path.join(root_dir, f), rem + f],
+                                               capture_output=True, timeout=300)
 
-            # Launch
             if self.manifest:
                 pkg = self.manifest.get('package_name', '')
                 if pkg and pkg != "unknown":
@@ -406,6 +513,7 @@ class XAPKPlayer:
 
     def _start(self):
         self.run_btn.config(state="disabled")
+        self.progress.configure(mode='indeterminate')
         self.progress.start(10)
 
         def work():
@@ -421,6 +529,7 @@ class XAPKPlayer:
                 self._msg(f"❌ {e}", "#f85149")
             finally:
                 self.progress.stop()
+                self.progress.configure(mode='determinate', value=0)
                 self.root.after(0, lambda: self.run_btn.config(state="normal"))
 
         threading.Thread(target=work, daemon=True).start()
