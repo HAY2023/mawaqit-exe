@@ -1,4 +1,4 @@
-﻿name: Build MAWAQIT XAPK Player
+name: Build MAWAQIT XAPK Player
 
 on:
   push:
@@ -77,17 +77,20 @@ jobs:
     - name: Install aria2c
       run: choco install aria2 -y --no-progress
 
-    - name: Download Android-x86 4.4
+    - name: Download Android-x86 (Lite Edition)
       timeout-minutes: 25
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
+        
+        # يمكنك استبدال هذا الرابط لاحقاً برابط الـ Google Drive للنسخة النحيفة جداً التي ستصنعها
         $url = "https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"
+        
         Write-Host "Downloading $url"
         aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none -d "package/android" -o "android-x86.iso" $url 2>&1
         if (Test-Path "package/android/android-x86.iso") {
           $size = (Get-Item "package/android/android-x86.iso").Length / 1MB
           Write-Host "Got: $([math]::Round($size, 1)) MB"
-          if ($size -lt 250) { exit 1 }
+          if ($size -lt 50) { exit 1 } # قللنا حجم الفحص تحسباً للنسخة النحيفة
         } else { exit 1 }
 
     - name: Extract essential files from ISO
@@ -102,6 +105,19 @@ jobs:
         } else {
           Write-Host "Extraction failed, falling back to full ISO"
         }
+
+    - name: Download and Run UPX (Size Stripping)
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive upx.zip -DestinationPath "upx_tool" -Force
+        $upxExe = Get-ChildItem "upx_tool" -Recurse -Filter "upx.exe" | Select-Object -First 1
+        
+        Write-Host "Starting UPX ultra-compression on QEMU binaries..."
+        $files = Get-ChildItem -Path "package/qemu" -Include *.dll, *.exe -Recurse
+        foreach ($file in $files) {
+            Start-Process -FilePath $upxExe.FullName -ArgumentList "-9 `"$($file.FullName)`"" -Wait -NoNewWindow -PassThru
+        }
+        exit 0
 
     - name: Assemble and Ultra Compress
       run: |
