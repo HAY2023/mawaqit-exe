@@ -1,0 +1,87 @@
+name: Prepare Server Files
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download and Zip QEMU
+      run: |
+        curl -L -o qemu-raw.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
+        Expand-Archive qemu-raw.zip -DestinationPath "temp_qemu" -Force
+        Remove-Item qemu-raw.zip
+        $qemuExe = Get-ChildItem "temp_qemu" -Recurse -Filter "qemu-system-x86_64.exe" | Select-Object -First 1
+        $srcDir = $qemuExe.DirectoryName
+        mkdir "qemu" -ErrorAction SilentlyContinue
+        Copy-Item "$srcDir/qemu-system-x86_64.exe" "qemu/"
+        Copy-Item "$srcDir/qemu-system-i386.exe" "qemu/" -ErrorAction SilentlyContinue
+        Copy-Item "$srcDir/qemu-img.exe" "qemu/" -ErrorAction SilentlyContinue
+        Get-ChildItem "$srcDir" -Filter "*.dll" | Copy-Item -Destination "qemu/"
+        mkdir "qemu/share" -ErrorAction SilentlyContinue
+        @("bios-256k.bin", "vgabios-stdvga.bin", "vgabios.bin", "kvmvapic.bin", "efi-virtio.rom") | ForEach-Object {
+          $f = Get-ChildItem "temp_qemu" -Recurse -Filter $_ | Select-Object -First 1
+          if ($f) { Copy-Item $f.FullName "qemu/share/" }
+        }
+        Remove-Item "temp_qemu" -Recurse -Force
+        
+        # UPX compress
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive upx.zip -DestinationPath "upx_tool" -Force
+        $upxExe = Get-ChildItem "upx_tool" -Recurse -Filter "upx.exe" | Select-Object -First 1
+        Get-ChildItem "qemu" -Include *.dll, *.exe -Recurse | ForEach-Object {
+          Start-Process -FilePath $upxExe.FullName -ArgumentList "-9 `"$($_.FullName)`"" -Wait -NoNewWindow -PassThru
+        }
+        
+        Compress-Archive -Path "qemu/*" -DestinationPath "qemu.zip" -Force
+        $s = (Get-Item "qemu.zip").Length / 1MB
+        Write-Host "qemu.zip: $([math]::Round($s, 1)) MB"
+
+    - name: Download and Zip ADB
+      run: |
+        curl -L -o pt.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+        Expand-Archive pt.zip -DestinationPath "temp_pt" -Force
+        Remove-Item pt.zip
+        mkdir "platform-tools" -ErrorAction SilentlyContinue
+        Copy-Item "temp_pt/platform-tools/adb.exe" "platform-tools/"
+        Copy-Item "temp_pt/platform-tools/AdbWinApi.dll" "platform-tools/"
+        Copy-Item "temp_pt/platform-tools/AdbWinUsbApi.dll" "platform-tools/"
+        Remove-Item "temp_pt" -Recurse -Force
+        
+        Compress-Archive -Path "platform-tools/*" -DestinationPath "adb.zip" -Force
+        $s = (Get-Item "adb.zip").Length / 1MB
+        Write-Host "adb.zip: $([math]::Round($s, 1)) MB"
+
+    - name: Show file sizes
+      run: |
+        Write-Host "=== Files Ready ==="
+        Get-ChildItem *.zip | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length/1MB, 1)) MB" }
+
+    - name: Delete old server-files release
+      continue-on-error: true
+      run: |
+        gh release delete server-files --yes --cleanup-tag 2>$null
+        exit 0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload as Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: server-files
+        name: "Server Files (QEMU + ADB)"
+        body: |
+          ملفات السيرفر - ارفعها على Lovable Admin
+          - qemu.zip: محاكي QEMU مضغوط بـ UPX
+          - adb.zip: أدوات ADB
+          - android-lite.zip موجود بالفعل في إصدار v0.1-lite
+        files: |
+          qemu.zip
+          adb.zip
+        make_latest: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
