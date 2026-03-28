@@ -17,7 +17,7 @@ from tkinter import filedialog, ttk
 
 
 # === Server API URL ===
-FILES_API = "https://umyqxjwitaychkwnrxgy.supabase.co/functions/v1/api-files"
+FILES_API = "https://25016447-75a3-4e29-91b0-333910529c51.lovableproject.com/api/files"
 
 
 def get_app_dir():
