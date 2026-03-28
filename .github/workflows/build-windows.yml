@@ -79,11 +79,11 @@ jobs:
         mkdir "package/android" -ErrorAction SilentlyContinue
         
         # رابط النسخة النحيفة المجهزة مسبقاً (kernel + initrd.img + system.sfs)
-        # غيّر هذا الرابط بعد رفع ملفاتك النحيفة كإصدار على GitHub
         $url = "https://github.com/HAY2023/mawaqit-exe/releases/download/v0.1-lite/android-lite.zip"
         
         Write-Host "Downloading Custom Lite Android from: $url"
-        Invoke-WebRequest -Uri $url -OutFile "android-lite.zip" -UseBasicParsing
+        $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/octet-stream" }
+        Invoke-WebRequest -Uri $url -OutFile "android-lite.zip" -UseBasicParsing -Headers $headers
         
         Expand-Archive "android-lite.zip" -DestinationPath "package/android" -Force
         Remove-Item "android-lite.zip"
@@ -99,6 +99,8 @@ jobs:
           Get-ChildItem "package/android"
           exit 1
         }
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Download and Run UPX (Size Stripping)
       run: |
