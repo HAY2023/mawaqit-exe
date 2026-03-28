@@ -52,7 +52,7 @@ jobs:
         if [ -f system.sfs ]; then
           echo "Extracting system.img from system.sfs..."
           rm -rf squashfs-root
-          unsquashfs -f system.sfs
+          unsquashfs -f -no-xattrs system.sfs
           
           if [ -d squashfs-root ]; then
             # Find the actual system.img inside
