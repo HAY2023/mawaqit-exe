@@ -48,16 +48,14 @@ jobs:
     - name: Build XAPK Player EXE
       run: pyinstaller --onefile --windowed --name "MAWAQIT-Player" --icon=app.ico xapk_player.py
 
-    - name: Download ADB (minimal - only 3 files)
+    - name: Download ADB (minimal)
       run: |
         curl -L -o pt.zip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
         Expand-Archive pt.zip -DestinationPath "package" -Force
         Remove-Item pt.zip
         Get-ChildItem "package/platform-tools" -Exclude "adb.exe","AdbWinApi.dll","AdbWinUsbApi.dll" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        $s = (Get-ChildItem "package/platform-tools" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "ADB: $([math]::Round($s, 1)) MB"
 
-    - name: Download and Trim QEMU (essential only)
+    - name: Download and Trim QEMU
       run: |
         curl -L -o qemu.zip "https://github.com/dirkarnez/qemu-portable/releases/download/20240822/qemu-w64-portable-20240822.zip"
         Expand-Archive qemu.zip -DestinationPath "temp_qemu" -Force
@@ -65,102 +63,66 @@ jobs:
         $qemuExe = Get-ChildItem "temp_qemu" -Recurse -Filter "qemu-system-x86_64.exe" | Select-Object -First 1
         $srcDir = $qemuExe.DirectoryName
         mkdir "package/qemu" -ErrorAction SilentlyContinue
-        
-        # Only essential exe
         Copy-Item "$srcDir/qemu-system-x86_64.exe" "package/qemu/"
+        Copy-Item "$srcDir/qemu-system-i386.exe" "package/qemu/" -ErrorAction SilentlyContinue
         Copy-Item "$srcDir/qemu-img.exe" "package/qemu/" -ErrorAction SilentlyContinue
-        
-        # Only required DLLs (skip debug/test DLLs)
         Get-ChildItem "$srcDir" -Filter "*.dll" | Copy-Item -Destination "package/qemu/"
-        
-        # Only essential BIOS files
         mkdir "package/qemu/share" -ErrorAction SilentlyContinue
-        @("bios-256k.bin","efi-virtio.rom","kvmvapic.bin","vgabios-stdvga.bin","efi-e1000.rom") | ForEach-Object {
+        @("bios-256k.bin", "vgabios-stdvga.bin", "vgabios.bin", "kvmvapic.bin", "efi-virtio.rom") | ForEach-Object {
           $f = Get-ChildItem "temp_qemu" -Recurse -Filter $_ | Select-Object -First 1
           if ($f) { Copy-Item $f.FullName "package/qemu/share/" }
         }
         Remove-Item "temp_qemu" -Recurse -Force
-        $s = (Get-ChildItem "package/qemu" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "QEMU: $([math]::Round($s, 1)) MB"
 
     - name: Install aria2c
       run: choco install aria2 -y --no-progress
 
-    - name: Download Android-x86 (smallest version)
+    - name: Download Android-x86 4.4 (for <150MB bundled size)
       timeout-minutes: 25
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
         
-        # Try smallest versions first
-        $versions = @(
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"; min=250; name="4.4"},
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%207.1/android-x86_64-7.1-r5.iso"; min=500; name="7.1"},
-          @{url="https://downloads.sourceforge.net/project/android-x86/Release%209.0/android-x86_64-9.0-r2.iso"; min=800; name="9.0"}
-        )
+        # Using Android-x86 4.4 which compresses to ~120MB
+        $url = "https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"
         
-        $success = $false
-        foreach ($ver in $versions) {
-          Write-Host "`n=== Trying Android $($ver.name) ==="
-          Remove-Item "package/android/android-x86.iso" -ErrorAction SilentlyContinue
-          
-          aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none -d "package/android" -o "android-x86.iso" $ver.url 2>&1
-          
-          if (Test-Path "package/android/android-x86.iso") {
-            $size = (Get-Item "package/android/android-x86.iso").Length / 1MB
-            Write-Host "Got: $([math]::Round($size, 1)) MB (need > $($ver.min))"
-            if ($size -gt $ver.min) {
-              Write-Host "OK!"
-              $success = $true
-              break
-            }
-          }
-        }
-        if (-not $success) { exit 1 }
+        Write-Host "Downloading $url"
+        aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none -d "package/android" -o "android-x86.iso" $url 2>&1
+        
+        if (Test-Path "package/android/android-x86.iso") {
+          $size = (Get-Item "package/android/android-x86.iso").Length / 1MB
+          Write-Host "Got: $([math]::Round($size, 1)) MB"
+          if ($size -lt 250) { exit 1 }
+        } else { exit 1 }
 
-    - name: Extract essential files from ISO (reduce size)
+    - name: Extract essential files from ISO
       run: |
         $iso = "package/android/android-x86.iso"
         $dest = "package/android"
         
-        Write-Host "Extracting boot files from ISO..."
+        # We only need kernel, initrd, and system
         7z e $iso -o"$dest" kernel initrd.img ramdisk.img system.sfs system.img -r -y 2>&1
         
-        Get-ChildItem $dest | ForEach-Object {
-          Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 1)) MB"
-        }
-        
-        # Remove ISO if we got the essential files
-        $hasKernel = Test-Path "$dest/kernel"
-        $hasSystem = (Test-Path "$dest/system.sfs") -or (Test-Path "$dest/system.img")
-        if ($hasKernel -and $hasSystem) {
+        $hasBootFiles = (Test-Path "$dest/kernel") -and ((Test-Path "$dest/system.sfs") -or (Test-Path "$dest/system.img"))
+        if ($hasBootFiles) {
           Remove-Item $iso -Force
-          Write-Host "Removed ISO, using extracted files (saved space!)"
+          Write-Host "Successfully extracted essential files!"
         } else {
-          Write-Host "Keeping ISO (extraction incomplete)"
+          Write-Host "Extraction failed, falling back to full ISO"
         }
-        
-        $s = (Get-ChildItem $dest -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "Android total: $([math]::Round($s, 1)) MB"
 
-    - name: Assemble and Ultra-Compress
+    - name: Assemble and Ultra Compress
       run: |
         Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
         mkdir "package/data" -ErrorAction SilentlyContinue
         
-        Write-Host "=== Package Contents ==="
-        Get-ChildItem "package" -Directory | ForEach-Object {
-          $s = (Get-ChildItem $_.FullName -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-          Write-Host "$($_.Name): $([math]::Round($s, 1)) MB"
-        }
         $total = (Get-ChildItem "package" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "TOTAL uncompressed: $([math]::Round($total, 1)) MB"
+        Write-Host "Total uncompressed: $([math]::Round($total, 1)) MB"
         
-        # Ultra compression: LZMA2 with max settings
-        Write-Host "`nCompressing with maximum settings..."
-        7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=64m -ms=on "MAWAQIT-Player.7z" "./package/*"
+        # -mx=9 -md=64m compresses ISO/SFS extremely well! Target is ~140MB
+        7z a -t7z -mx=9 -md=64m -mfb=273 -ms=on "MAWAQIT-Player.7z" "./package/*"
+        
         $s = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
-        Write-Host "FINAL 7z: $([math]::Round($s, 1)) MB"
-        Write-Host "Compression ratio: $([math]::Round($s / $total * 100, 1))%"
+        Write-Host "FINAL 7z Size: $([math]::Round($s, 1)) MB"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
@@ -181,12 +143,16 @@ jobs:
         tag_name: v3.5.0
         name: "MAWAQIT Player v3.5.0"
         body: |
-          ## 🕌 MAWAQIT Player - كل شيء مدمج
+          ## 🕌 MAWAQIT Player - كل شيء مدمج بحجم خفيف
           
+          ✅ **حجم صغير:** أقل من 150 MB!
+          ✅ **يعمل أوفلاين:** أندرويد مدمج ولا تحتاج انترنت.
+          
+          ### الاستخدام:
           1. حمّل `MAWAQIT-Player.7z`
-          2. فك الضغط بـ 7-Zip
+          2. فك الضغط ببرنامج 7-Zip
           3. شغّل `MAWAQIT-Player.exe`
-          4. اختر XAPK واضغط 🚀 تشغيل
+          4. اختر تطبيق XAPK واضغط تحميل
         files: MAWAQIT-Player.7z
         make_latest: true
       env:

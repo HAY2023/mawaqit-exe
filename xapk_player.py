@@ -34,7 +34,9 @@ ADB_EXE = os.path.join(APP_DIR, "platform-tools", "adb.exe")
 ANDROID_ISO = os.path.join(APP_DIR, "android", "android-x86.iso")
 ANDROID_KERNEL = os.path.join(APP_DIR, "android", "kernel")
 ANDROID_INITRD = os.path.join(APP_DIR, "android", "initrd.img")
-ANDROID_SYSTEM = os.path.join(APP_DIR, "android", "system.sfs")
+ANDROID_SYSTEM_IMG = os.path.join(APP_DIR, "android", "system.img")
+ANDROID_SYSTEM_SFS = os.path.join(APP_DIR, "android", "system.sfs")
+
 DATA_DIR = os.path.join(APP_DIR, "data")
 DATA_DISK = os.path.join(DATA_DIR, "userdata.qcow2")
 EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "xapk_extract")
@@ -268,36 +270,46 @@ class XAPKPlayer:
             "-machine", "q35",
         ]
 
-        # Add BIOS path if trimmed QEMU
         if os.path.isdir(QEMU_BIOS):
             cmd.extend(["-L", QEMU_BIOS])
 
-        # Boot from extracted files or ISO
         if os.path.isfile(ANDROID_KERNEL) and os.path.isfile(ANDROID_INITRD):
+            # Boot from extracted kernel + initrd
             cmd.extend(["-kernel", ANDROID_KERNEL, "-initrd", ANDROID_INITRD])
-            cmd.extend(["-append", "root=/dev/ram0 androidboot.selinux=permissive console=ttyS0 UVESA_MODE=1280x720"])
-            if os.path.isfile(ANDROID_SYSTEM):
-                cmd.extend(["-hdb", ANDROID_SYSTEM])
+            cmd.extend(["-append", "root=/dev/ram0 androidboot.selinux=permissive SRC=/"])
+            
+            # Attach system read-only
+            if os.path.isfile(ANDROID_SYSTEM_IMG):
+                cmd.extend(["-drive", f"file={ANDROID_SYSTEM_IMG},format=raw,readonly=on"])
+            elif os.path.isfile(ANDROID_SYSTEM_SFS):
+                cmd.extend(["-drive", f"file={ANDROID_SYSTEM_SFS},format=raw,readonly=on"])
         elif os.path.isfile(ANDROID_ISO):
+            # Boot from full ISO
             cmd.extend(["-cdrom", ANDROID_ISO, "-boot", "d"])
 
         if os.path.isfile(DATA_DISK):
-            cmd.extend(["-hda", DATA_DISK])
+            cmd.extend(["-hdb", DATA_DISK])
 
-        # Check acceleration
+        # Remove our old -machine q35 without accel
+        if "-machine" in cmd:
+            idx = cmd.index("-machine")
+            cmd.pop(idx)
+            cmd.pop(idx)
+            
+        # Multiple -accel options allows QEMU to try them in order and fallback to tcg
+        cmd.extend([
+            "-machine", "q35",
+            "-accel", "whpx,kernel-irqchip=off",
+            "-accel", "tcg"
+        ])
+
         try:
-            r = subprocess.run([QEMU_EXE, "-accel", "help"], capture_output=True, text=True, timeout=5)
-            out = r.stdout.lower()
-            if "whpx" in out:
-                cmd.extend(["-accel", "whpx"])
-            elif "hax" in out:
-                cmd.extend(["-accel", "hax"])
-            else:
-                cmd.extend(["-accel", "tcg"])
-        except:
-            cmd.extend(["-accel", "tcg"])
+            # We add creationflags=subprocess.CREATE_NO_WINDOW so it doesn't pop up a console
+            self.qemu_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception as e:
+            self._msg(f"❌ خطأ QEMU: {e}", "#f85149")
+            return
 
-        self.qemu_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.stop_btn.config(state="normal")
 
     def _wait_boot(self, timeout=180):
