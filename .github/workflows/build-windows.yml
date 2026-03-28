@@ -74,36 +74,30 @@ jobs:
         }
         Remove-Item "temp_qemu" -Recurse -Force
 
-    - name: Install aria2c
-      run: choco install aria2 -y --no-progress
-
-    - name: Download Android-x86 (Lite Edition)
-      timeout-minutes: 25
+    - name: Download MAWAQIT Custom Lite Android
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
         
-        # يمكنك استبدال هذا الرابط لاحقاً برابط الـ Google Drive للنسخة النحيفة جداً التي ستصنعها
-        $url = "https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"
+        # رابط النسخة النحيفة المجهزة مسبقاً (kernel + initrd.img + system.sfs)
+        # غيّر هذا الرابط بعد رفع ملفاتك النحيفة كإصدار على GitHub
+        $url = "https://github.com/HAY2023/mawaqit-exe/releases/download/v0.1-lite/android-lite.zip"
         
-        Write-Host "Downloading $url"
-        aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none -d "package/android" -o "android-x86.iso" $url 2>&1
-        if (Test-Path "package/android/android-x86.iso") {
-          $size = (Get-Item "package/android/android-x86.iso").Length / 1MB
-          Write-Host "Got: $([math]::Round($size, 1)) MB"
-          if ($size -lt 50) { exit 1 } # قللنا حجم الفحص تحسباً للنسخة النحيفة
-        } else { exit 1 }
-
-    - name: Extract essential files from ISO
-      run: |
-        $iso = "package/android/android-x86.iso"
-        $dest = "package/android"
-        7z e $iso -o"$dest" kernel initrd.img ramdisk.img system.sfs system.img -r -y 2>&1
-        $hasBootFiles = (Test-Path "$dest/kernel") -and ((Test-Path "$dest/system.sfs") -or (Test-Path "$dest/system.img"))
-        if ($hasBootFiles) {
-          Remove-Item $iso -Force
-          Write-Host "Successfully extracted essential files!"
+        Write-Host "Downloading Custom Lite Android from: $url"
+        Invoke-WebRequest -Uri $url -OutFile "android-lite.zip" -UseBasicParsing
+        
+        Expand-Archive "android-lite.zip" -DestinationPath "package/android" -Force
+        Remove-Item "android-lite.zip"
+        
+        # التحقق من وجود الملفات الأساسية
+        $hasKernel = Test-Path "package/android/kernel"
+        $hasSystem = (Test-Path "package/android/system.sfs") -or (Test-Path "package/android/system.img")
+        if ($hasKernel -and $hasSystem) {
+          Write-Host "✅ Lite Android files OK!"
+          Get-ChildItem "package/android" | ForEach-Object { Write-Host "  $($_.Name) - $([math]::Round($_.Length/1MB, 1)) MB" }
         } else {
-          Write-Host "Extraction failed, falling back to full ISO"
+          Write-Host "❌ Missing essential Android files!"
+          Get-ChildItem "package/android"
+          exit 1
         }
 
     - name: Download and Run UPX (Size Stripping)

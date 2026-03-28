@@ -1,0 +1,139 @@
+name: Create Lite Android Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-lite:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download Android-x86 4.4 ISO
+      run: |
+        wget -q "https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso" -O android.iso
+        ls -lh android.iso
+
+    - name: Extract essential boot files
+      run: |
+        mkdir android-lite
+        
+        # Mount ISO and copy essential files
+        sudo mkdir /mnt/iso
+        sudo mount -o loop android.iso /mnt/iso
+        
+        echo "=== ISO Contents ==="
+        ls -la /mnt/iso/
+        
+        # Copy kernel and initrd
+        cp /mnt/iso/kernel android-lite/ 2>/dev/null || true
+        cp /mnt/iso/initrd.img android-lite/ 2>/dev/null || true
+        cp /mnt/iso/ramdisk.img android-lite/ 2>/dev/null || true
+        
+        # Copy system (squashfs or img)
+        cp /mnt/iso/system.sfs android-lite/ 2>/dev/null || true
+        cp /mnt/iso/system.img android-lite/ 2>/dev/null || true
+        
+        sudo umount /mnt/iso
+        rm android.iso
+        
+        echo "=== Extracted Files ==="
+        ls -lh android-lite/
+
+    - name: Strip bloatware from system (optional)
+      run: |
+        cd android-lite
+        
+        # If system.sfs exists, extract system.img from it
+        if [ -f system.sfs ]; then
+          echo "Extracting system.img from system.sfs..."
+          unsquashfs system.sfs 2>/dev/null || sudo apt-get install -y squashfs-tools && unsquashfs system.sfs
+          
+          if [ -d squashfs-root ]; then
+            # Find the actual system.img inside
+            find squashfs-root -name "system.img" -exec cp {} system-extracted.img \; 2>/dev/null
+            
+            if [ -f system-extracted.img ]; then
+              echo "Found system.img inside sfs, using extracted version"
+              
+              # Try to mount and strip bloatware
+              sudo mkdir -p /mnt/sys
+              sudo mount -o loop system-extracted.img /mnt/sys 2>/dev/null && {
+                echo "=== System contents ==="
+                ls /mnt/sys/app/ 2>/dev/null || true
+                
+                # Remove bloatware apps
+                sudo rm -rf /mnt/sys/app/Browser* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Camera* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Gallery* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Music* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Video* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Email* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Calculator* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Calendar* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/DeskClock* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/SoundRecorder* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Development* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/QuickSearch* 2>/dev/null
+                sudo rm -rf /mnt/sys/app/Terminal* 2>/dev/null
+                sudo rm -rf /mnt/sys/media/audio/ringtones/* 2>/dev/null
+                sudo rm -rf /mnt/sys/media/audio/notifications/* 2>/dev/null
+                sudo rm -rf /mnt/sys/media/audio/alarms/* 2>/dev/null
+                sudo rm -rf /mnt/sys/usr/share/zoneinfo/* 2>/dev/null
+                
+                echo "=== After cleanup ==="
+                ls /mnt/sys/app/ 2>/dev/null || true
+                
+                sudo umount /mnt/sys
+                
+                # Re-create squashfs with maximum compression
+                sudo mksquashfs system-extracted.img system-lite.sfs -comp xz -b 1M -Xdict-size 100%
+                
+                if [ -f system-lite.sfs ]; then
+                  echo "Lite SFS created!"
+                  ls -lh system-lite.sfs
+                  rm system.sfs
+                  mv system-lite.sfs system.sfs
+                fi
+              } || echo "Could not mount system.img, keeping original system.sfs"
+              
+              rm -f system-extracted.img
+            else
+              echo "No system.img found inside sfs, keeping original"
+            fi
+            
+            rm -rf squashfs-root
+          fi
+        fi
+        
+        echo "=== Final android-lite contents ==="
+        ls -lh .
+
+    - name: Create android-lite.zip
+      run: |
+        cd android-lite
+        zip -9 ../android-lite.zip *
+        cd ..
+        ls -lh android-lite.zip
+        echo "FINAL SIZE: $(du -h android-lite.zip | cut -f1)"
+
+    - name: Delete old lite release (if exists)
+      continue-on-error: true
+      run: gh release delete v0.1-lite --yes --cleanup-tag 2>/dev/null || true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload as GitHub Release
+      run: |
+        gh release create v0.1-lite \
+          --repo ${{ github.repository }} \
+          --title "Android Lite Files (Auto-Generated)" \
+          --notes "🤖 Auto-stripped Android 4.4 system files for minimal MAWAQIT package.
+          
+          Contains: kernel, initrd.img, system.sfs (cleaned)
+          
+          This release is used by the main build workflow." \
+          android-lite.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
