@@ -1,4 +1,4 @@
-name: Build MAWAQIT XAPK Player
+﻿name: Build MAWAQIT XAPK Player
 
 on:
   push:
@@ -77,17 +77,13 @@ jobs:
     - name: Install aria2c
       run: choco install aria2 -y --no-progress
 
-    - name: Download Android-x86 4.4 (for <150MB bundled size)
+    - name: Download Android-x86 4.4
       timeout-minutes: 25
       run: |
         mkdir "package/android" -ErrorAction SilentlyContinue
-        
-        # Using Android-x86 4.4 which compresses to ~120MB
         $url = "https://downloads.sourceforge.net/project/android-x86/Release%204.4/android-x86-4.4-r5.iso"
-        
         Write-Host "Downloading $url"
         aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --max-tries=5 --retry-wait=3 --timeout=120 --connect-timeout=30 --file-allocation=none -d "package/android" -o "android-x86.iso" $url 2>&1
-        
         if (Test-Path "package/android/android-x86.iso") {
           $size = (Get-Item "package/android/android-x86.iso").Length / 1MB
           Write-Host "Got: $([math]::Round($size, 1)) MB"
@@ -98,10 +94,7 @@ jobs:
       run: |
         $iso = "package/android/android-x86.iso"
         $dest = "package/android"
-        
-        # We only need kernel, initrd, and system
         7z e $iso -o"$dest" kernel initrd.img ramdisk.img system.sfs system.img -r -y 2>&1
-        
         $hasBootFiles = (Test-Path "$dest/kernel") -and ((Test-Path "$dest/system.sfs") -or (Test-Path "$dest/system.img"))
         if ($hasBootFiles) {
           Remove-Item $iso -Force
@@ -115,10 +108,6 @@ jobs:
         Copy-Item "dist/MAWAQIT-Player.exe" "package/MAWAQIT-Player.exe"
         mkdir "package/data" -ErrorAction SilentlyContinue
         
-        $total = (Get-ChildItem "package" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-        Write-Host "Total uncompressed: $([math]::Round($total, 1)) MB"
-        
-        # -mx=9 -md=64m compresses ISO/SFS extremely well! Target is ~140MB
         7z a -t7z -mx=9 -md=64m -mfb=273 -ms=on "MAWAQIT-Player.7z" "./package/*"
         
         $s = (Get-Item "MAWAQIT-Player.7z").Length / 1MB
@@ -132,10 +121,12 @@ jobs:
         retention-days: 30
 
     - name: Delete old release
-      run: gh release delete v3.5.0 --yes --cleanup-tag 2>$null
+      continue-on-error: true
+      run: |
+        gh release delete v3.5.0 --yes --cleanup-tag 2>$null
+        exit 0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      continue-on-error: true
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -149,10 +140,10 @@ jobs:
           ✅ **يعمل أوفلاين:** أندرويد مدمج ولا تحتاج انترنت.
           
           ### الاستخدام:
-          1. حمّل `MAWAQIT-Player.7z`
+          1. حمّل MAWAQIT-Player.7z
           2. فك الضغط ببرنامج 7-Zip
-          3. شغّل `MAWAQIT-Player.exe`
-          4. اختر تطبيق XAPK واضغط تحميل
+          3. شغّل MAWAQIT-Player.exe
+          4. اختر تطبيق XAPK واضغط تشغيل
         files: MAWAQIT-Player.7z
         make_latest: true
       env:
